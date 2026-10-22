@@ -50,6 +50,24 @@ def validated(strategy: Strategy) -> Strategy:
     return strategy
 
 
+def scale_risk(strategy: Strategy, mult: float) -> Strategy:
+    """Copy of `strategy` risking `mult` x as much per trade (capped at 5% of the balance).
+
+    `daily_stop_pct` is left alone: it is the account-level guard under FTMO's 5% limit.
+    Works for walk-forward wrappers too (their base strategy is scaled as well).
+    """
+    from dataclasses import replace
+
+    if mult == 1:
+        return strategy
+    risk = min(strategy.risk_pct * mult, 5.0)
+    base = getattr(strategy, "base", None)
+    if base is not None:
+        return replace(strategy, base=replace(base, risk_pct=min(base.risk_pct * mult, 5.0)),
+                       risk_pct=risk)
+    return replace(strategy, risk_pct=risk)
+
+
 def atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
     prev_close = df["close"].shift(1)
     tr = pd.concat(

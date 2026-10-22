@@ -11,6 +11,7 @@ Requires Windows (or Wine) with the MT5 terminal installed and logged in, plus
     PHASE_TARGET_PCT=10                   10 for phase 1, 5 for phase 2, 0 when funded
     DAILY_GUARD_PCT=4.0                   flatten + halt for the day at this daily loss
     MAX_GUARD_PCT=9.0                     flatten + halt for good at this total loss
+    FX_RISK_MULT=1                        scale the strategy's risk per trade (2 = double)
     DRY_RUN=true                          log orders instead of sending them
 
     python -m prop_fx.mt5_trader --check   # verify the connection and exit
@@ -56,6 +57,7 @@ class TraderConfig:
     daily_guard_pct: float = 4.0
     max_guard_pct: float = 9.0
     dry_run: bool = True
+    risk_mult: float = 1.0
     bars: int = 3000  # hourly history fed to the strategy (walk-forward needs ~12+ weeks)
     log_file: str = "mt5_trades.jsonl"
 
@@ -71,6 +73,7 @@ class TraderConfig:
             daily_guard_pct=float(env("DAILY_GUARD_PCT", cls.daily_guard_pct)),
             max_guard_pct=float(env("MAX_GUARD_PCT", cls.max_guard_pct)),
             dry_run=env("DRY_RUN", "true").lower() in {"1", "true", "yes"},
+            risk_mult=float(env("FX_RISK_MULT", "1")),
         )
 
 
@@ -78,7 +81,8 @@ class MT5Trader:
     def __init__(self, cfg: TraderConfig, mt5, strategy=None, now_fn=None) -> None:
         self.cfg = cfg
         self.mt5 = mt5
-        self.strategy = strategy or strategies.load(cfg.strategy)
+        self.strategy = strategies.scale_risk(strategy or strategies.load(cfg.strategy),
+                                              cfg.risk_mult)
         self.now = now_fn or (lambda: datetime.now(timezone.utc))
         self.pairs = [p for p in PAIRS if self.strategy.pairs is None or p in self.strategy.pairs]
         self.state = {"day": None, "day_start_balance": None, "halted_day": None,

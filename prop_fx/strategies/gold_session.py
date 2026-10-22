@@ -19,7 +19,7 @@ See tournament_gold/gold_session.md for the research, grid and learning journal.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 import pandas as pd
@@ -27,7 +27,8 @@ import pandas as pd
 from . import Strategy, atr
 from ..adaptive import WalkForward, grid
 
-MODES = {"follow": 1, "fade": -1, "off": 0, "long": 2, "short": -2}  # +-2 = fixed direction
+MODES = {"follow": 1, "fade": -1, "off": 0, "long": 2, "short": -2,  # +-2 = fixed direction
+         "mom": 1}  # "mom": follow the trailing mom_hours move instead of the session move
 
 
 @dataclass
@@ -45,6 +46,8 @@ class GoldSession(Strategy):
     atr_n: int = 24
     bail_atr: float = 0.0  # >0: exit at the first hourly close >= bail_atr*ATR in profit (0 = off)
     trend_n: int = 0  # >0: skip trades against sign(close - SMA(trend_n) of daily closes)
+    mom_hours: int = 12  # mode "mom": direction = sign(close - close mom_hours bars ago)
+    bail_after: int = 1  # bail-out may fire from this many bars after the fill (1 = fill bar)
 
     def prepare(self, df: pd.DataFrame, pair: str) -> pd.DataFrame:
         out = df.copy()
@@ -82,9 +85,12 @@ class GoldSession(Strategy):
             score = score.mask(ok, (move.abs() / a).fillna(0))
 
         wk = weekday < 5
-        slot(wk & (lh == self.lon_entry - 1), cl - asia_open, self.lon_mode)
+        mom = cl - cl.shift(self.mom_hours)  # Round 3: trailing momentum (gold_trend's signal)
+        lon_ref = mom if self.lon_mode == "mom" else cl - asia_open
+        slot(wk & (lh == self.lon_entry - 1), lon_ref, self.lon_mode)
         ny_anchor = london_open if self.ny_ref == "london" else ny_open
-        slot(wk & (nh == self.ny_entry - 1), cl - ny_anchor, self.ny_mode)
+        ny_ref = mom if self.ny_mode == "mom" else cl - ny_anchor
+        slot(wk & (nh == self.ny_entry - 1), ny_ref, self.ny_mode)
 
         # never let the London exit flag kill a fresh NY trade: London exit only applies
         # before the NY entry hour on the NY clock
@@ -118,7 +124,7 @@ class GoldSession(Strategy):
             for j in range(i + 1, min(i + 12, len(o))):
                 if ex[j] or (j > i + 1 and ent[j] != 0):
                     break
-                if side * (c[j] - fill) >= thr:
+                if j - i >= self.bail_after and side * (c[j] - fill) >= thr:
                     flag[j] = True
                     break
         return pd.Series(flag, index=entry.index)
@@ -134,15 +140,49 @@ class GoldSession(Strategy):
         return pd.Series(m["s"].fillna(0).to_numpy(), index=df.index)
 
 
-# Risk: 1.5% per trade, one position at a time, <= 2 trades per Prague day, so a worst day
-# is two full stops = 3.0%; the 3.5% daily stop leaves 1.5% gap headroom under FTMO's 5%.
+@dataclass
+class PriorWalkForward(WalkForward):
+    """WalkForward that trades a fixed `prior` candidate (instead of sitting flat) in any
+    week where it cannot learn yet (fewer than train_weeks of history, or no candidate with
+    enough trades). Idea taken from gold_prop. Refits still use trailing data only."""
+    prior: int | None = None
+
+    def prepare(self, df: pd.DataFrame, pair: str) -> pd.DataFrame:
+        out = super().prepare(df, pair)
+        if self.prior is None or not self.candidates:
+            return out
+        unlearned = (out["param_set"] == -1).to_numpy()
+        if unlearned.any():
+            fallback = replace(self.base, **self.candidates[self.prior]).prepare(df, pair)
+            for col in ("entry", "exit", "stop_dist", "target_dist", "score"):
+                out.loc[unlearned, col] = fallback.loc[unlearned, col].to_numpy()
+            out.loc[unlearned, "param_set"] = self.prior
+        return out
+
+
+# ---- Final (Round 3) configuration -------------------------------------------------
+# Round 3 revision (one package, see tournament_gold/gold_session.md "Round 3"):
+#  * direction = sign of the trailing 12h/24h move (gold_trend's signal, the only one in the
+#    field that beats its own always-long control), taken on DST-correct LOCAL clocks:
+#    London slot fills 09:00 London, NY slot fills 09:00 or 10:00 New York.
+#    In BST/EDT weeks (the Apr-Oct hold-out) that is 08:00 / 13:00(-14:00) UTC.
+#  * bail-out (bank the first close >= 0.25 ATR in profit) may wait 1 or 2 bars (learned).
+#  * a prior candidate is traded while the learner warms up (no flat first 12 weeks).
+# Risk: 1.5% per trade, one position, <= 2 trades per Prague day. daily_stop_pct=3.0:
+#  at 1.5% risk two full stops = 3.0% (the stop then only guards gaps); at the judge's
+#  DOUBLE risk (3% per trade) a single full stop halts the day, so a second loser can't
+#  push the day toward the 5% FTMO limit.
 BASE = GoldSession(name="gold_session_base", risk_pct=1.5, max_positions=1,
-                   max_trades_per_day=2, daily_stop_pct=3.5, pairs=("XAUUSD",),
-                   bail_atr=0.25)  # learning cycle 6: bail-out exit (kept)
+                   max_trades_per_day=2, daily_stop_pct=3.0, pairs=("XAUUSD",),
+                   lon_mode="mom", ny_mode="mom", lon_entry=9, lon_exit=12,
+                   ny_entry=9, ny_exit=12, stop_atr=1.5, tgt_r=0.6, bail_atr=0.25)
 
-# 16 candidate sets: direction logic per slot x NY entry hour x target. Re-scored weekly.
-CANDIDATES = grid(lon_mode=["follow", "fade"], ny_mode=["follow", "fade"],
-                  ny_entry=[9, 10], tgt_r=[0.6, 0.8])
+# 16 candidate sets, re-scored every Monday on the trailing 12 weeks (total R).
+CANDIDATES = [dict(c, ny_exit=c["ny_entry"] + 3) for c in
+              grid(mom_hours=[12, 24], ny_entry=[9, 10], tgt_r=[0.6, 0.8], bail_after=[1, 2])]
+PRIOR = CANDIDATES.index({"mom_hours": 12, "ny_entry": 9, "tgt_r": 0.6, "bail_after": 1,
+                          "ny_exit": 12})
 
-STRATEGY = WalkForward(name="gold_session", base=BASE, candidates=CANDIDATES,
-                       train_weeks=12, refit_weeks=1, objective="expectancy", min_trades=10)
+STRATEGY = PriorWalkForward(name="gold_session", base=BASE, candidates=CANDIDATES,
+                            train_weeks=12, refit_weeks=1, objective="expectancy",
+                            min_trades=10, prior=PRIOR)

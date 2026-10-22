@@ -146,3 +146,9 @@ def test_stops_trading_when_target_reached():
     mt5.balance = mt5.equity = 110_500.0
     trader.on_bar()
     assert mt5.sent == []
+
+
+def test_risk_multiplier_doubles_lots():
+    trader, mt5, _ = make(risk_mult=2.0)
+    trader.on_bar()
+    assert mt5.sent[0]["volume"] == pytest.approx(5.0)  # 2 x 2.5 lots

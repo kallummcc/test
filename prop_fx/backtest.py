@@ -88,11 +88,13 @@ def main(argv=None) -> dict:
     p.add_argument("--spread-mult", type=float, default=1.0)
     p.add_argument("--slippage-pips", type=float, default=0.1)
     p.add_argument("--boot", type=int, default=2000, help="bootstrap challenges")
+    p.add_argument("--risk-mult", type=float, default=1.0,
+                   help="scale the strategy's risk per trade (e.g. 2 = double risk)")
     p.add_argument("--out", default=None, help="directory for trades.csv")
     p.add_argument("--json", action="store_true")
     args = p.parse_args(argv)
 
-    strat = strategies.load(args.strategy)
+    strat = strategies.scale_risk(strategies.load(args.strategy), args.risk_mult)
     bars = load_dir(args.data_dir, strat.interval, strat.pairs, args.start, args.end)
     cfg = engine.EngineConfig(args.balance, args.commission, spread_mult=args.spread_mult,
                               slippage_pips=args.slippage_pips)

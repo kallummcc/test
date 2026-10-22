@@ -14,6 +14,7 @@ import argparse
 import json
 
 import numpy as np
+import pandas as pd
 
 from . import engine, ftmo, strategies
 from .backtest import load_dir
@@ -64,10 +65,19 @@ def summarize(results: list[dict]) -> dict:
     }
 
 
-def analyse(name: str, data_dir: str, max_weeks: int, n_boot: int, seed: int = 7) -> dict:
-    strat = strategies.load(name)
-    bars = load_dir(data_dir, strat.interval, strat.pairs)
-    res = engine.run(strat, bars)
+def analyse(name: str, data_dir: str, max_weeks: int, n_boot: int, seed: int = 7,
+            risk_mult: float = 1.0, trade_from: str | None = None, end: str | None = None) -> dict:
+    strat = strategies.scale_risk(strategies.load(name), risk_mult)
+    bars = load_dir(data_dir, strat.interval, strat.pairs, end=end)
+    tf = pd.Timestamp(trade_from, tz="UTC") if trade_from else None
+    res = engine.run(strat, bars, trade_from=tf)
+    if tf is not None:
+        keep = res.times >= tf
+        k0 = int(np.flatnonzero(keep)[0])
+        base = res.realized[k0 - 1] if k0 else 0.0
+        res = engine.EngineResult(res.times[keep], res.realized[keep] - base,
+                                  res.floating_close[keep], res.floating_worst[keep],
+                                  res.flat[keep], res.opened[keep], res.trades)
     rules = ftmo.Rules(max_weeks=max_weeks)
     weeks = ftmo.weeks_from(res, rules)
     rng = np.random.default_rng(seed)
@@ -80,7 +90,8 @@ def analyse(name: str, data_dir: str, max_weeks: int, n_boot: int, seed: int = 7
         if r["phase1"] == "incomplete" or (r["phase1"] == "pass" and r["phase2"] == "incomplete"):
             continue
         hist.append(r)
-    return {"strategy": name, "max_weeks_per_phase": max_weeks, "weeks_of_data": len(weeks),
+    return {"strategy": name, "risk_pct": strat.risk_pct, "max_weeks_per_phase": max_weeks,
+            "weeks_of_data": len(weeks),
             "bootstrap": summarize(boot), "historical": summarize(hist) if hist else None}
 
 
@@ -90,9 +101,14 @@ def main(argv=None) -> None:
     p.add_argument("--data-dir", default="data/gold")
     p.add_argument("--max-weeks", type=int, default=52)
     p.add_argument("--boot", type=int, default=2000)
+    p.add_argument("--risk-mult", type=float, default=1.0)
+    p.add_argument("--trade-from", default=None, help="earlier bars only warm up / train")
+    p.add_argument("--end", default=None)
     args = p.parse_args(argv)
     for name in args.strategies:
-        print(json.dumps(analyse(name, args.data_dir, args.max_weeks, args.boot)), flush=True)
+        print(json.dumps(analyse(name, args.data_dir, args.max_weeks, args.boot,
+                                 risk_mult=args.risk_mult, trade_from=args.trade_from,
+                                 end=args.end)), flush=True)
 
 
 if __name__ == "__main__":

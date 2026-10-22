@@ -198,3 +198,18 @@ def test_position_closed_before_missing_day():
     res = engine.run(AlwaysLong(name="t", stop=0.05, max_positions=1), {"EURUSD": gapped})
     gap_closes = [t for t in res.trades if t.reason == "data gap"]
     assert gap_closes and pd.Timestamp(gap_closes[0].exit_time).weekday() == 1
+
+
+def test_scale_risk_doubles_position_size_and_walk_forward_base():
+    from prop_fx.adaptive import WalkForward, grid
+    from prop_fx.strategies import scale_risk
+
+    df = fx_bars(weeks=1, drift=-0.0005, vol=0.0001)
+    one = engine.run(AlwaysLong(name="t", risk_pct=0.5, max_positions=1), {"EURUSD": df})
+    two = engine.run(scale_risk(AlwaysLong(name="t", risk_pct=0.5, max_positions=1), 2),
+                     {"EURUSD": df})
+    assert two.trades[0].lots == pytest.approx(2 * one.trades[0].lots)
+    wf = WalkForward(name="wf", base=FixedSide(name="b", risk_pct=1.5), candidates=grid(side=[1]))
+    wf2 = scale_risk(wf, 2)
+    assert wf2.risk_pct == 3.0 and wf2.base.risk_pct == 3.0
+    assert scale_risk(AlwaysLong(name="t", risk_pct=2.0), 3).risk_pct == 5.0  # capped
