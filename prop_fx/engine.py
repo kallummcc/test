@@ -12,7 +12,8 @@ Execution model:
   evaluate many challenge start dates from a single run.
 * Weekend: everything is closed by Friday 20:00 UTC and nothing opens after
   Friday 16:00 UTC (FTMO Standard accounts may not hold over the weekend).
-  Any position left open across a data gap of more than 36h is closed at the last
+  Any position left open across a data gap of more than GAP_HOURS (holiday, dropped
+  contract-roll day) is closed at the last
   price before the gap.
 * Overnight swap is not modelled.
 """
@@ -30,6 +31,7 @@ from .strategies import Strategy
 
 REQUIRED = {"entry", "exit", "stop_dist", "target_dist", "score"}
 DAY_TZ = "Europe/Prague"  # FTMO resets the daily loss limit at midnight CE(S)T
+GAP_HOURS = 6  # longer gaps than this (outside weekends) mean missing data: close at last price
 
 
 @dataclass
@@ -142,7 +144,7 @@ def run(strategy: Strategy, bars: dict[str, pd.DataFrame], cfg: EngineConfig | N
 
     for i, ts in enumerate(timeline):
         # Data gap (weekend or missing data): close at the last known price.
-        if i and positions and (ts - timeline[i - 1]) > pd.Timedelta(hours=36):
+        if i and positions and (ts - timeline[i - 1]) > pd.Timedelta(hours=GAP_HOURS):
             for j in list(positions):
                 side = positions[j].side
                 close(j, C[i - 1, j] - side * half[j], timeline[i - 1], "data gap")

@@ -186,3 +186,12 @@ def test_max_trades_per_day_cap():
     per_day = pd.Series(1, index=[pd.Timestamp(t.entry_time).tz_convert("Europe/Prague").date()
                                   for t in res.trades]).groupby(level=0).sum()
     assert per_day.max() == 2
+
+
+def test_position_closed_before_missing_day():
+    df = fx_bars(weeks=1, vol=0.0001, seed=8)
+    wed = df.index[df.index.weekday == 2]
+    gapped = df.drop(wed)  # a dropped day mid-week
+    res = engine.run(AlwaysLong(name="t", stop=0.05, max_positions=1), {"EURUSD": gapped})
+    gap_closes = [t for t in res.trades if t.reason == "data gap"]
+    assert gap_closes and pd.Timestamp(gap_closes[0].exit_time).weekday() == 1

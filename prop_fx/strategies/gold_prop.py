@@ -90,14 +90,24 @@ def prop_score(trades: pd.DataFrame, min_trades: int, min_win: float = 0.60) -> 
 
 @dataclass
 class PropWalkForward(WalkForward):
-    """WalkForward with the prop objective. Same mechanics as prop_fx.adaptive.WalkForward:
-    each refit scores every candidate on the trailing `train_weeks` only."""
+    """WalkForward with two prop-firm additions. The mechanics are the same as
+    prop_fx.adaptive.WalkForward: each weekly refit scores every candidate on the
+    trailing `train_weeks` only.
+      * objective "prop" (see prop_score), as well as the built-in ones;
+      * `prior`: index of a default candidate to trade while there is not yet enough
+        history to learn from (or when no candidate has enough trades), instead of
+        sitting flat. None keeps the stock behaviour (flat)."""
     min_win: float = 0.60
-    sit_out_below: float = 0.0  # sit out the week if the best candidate's pass_score <= this
+    prior: int | None = None
+
+    def _score(self, w: pd.DataFrame) -> float:
+        if self.objective == "prop":
+            return prop_score(w, self.min_trades, self.min_win)
+        return score_trades(w, self.objective, self.min_trades)
 
     def prepare(self, df: pd.DataFrame, pair: str) -> pd.DataFrame:
-        if self.objective != "prop":
-            return super().prepare(df, pair)
+        if not self.candidates:
+            return self.base.prepare(df, pair)
         variants = [replace(self.base, **p) for p in self.candidates]
         frames, tables = [], []
         for v in variants:
@@ -116,14 +126,14 @@ class PropWalkForward(WalkForward):
         train = pd.Timedelta(weeks=self.train_weeks)
         for k, start in enumerate(refits):
             end = refits[k + 1] if k + 1 < len(refits) else utc[-1] + pd.Timedelta(hours=1)
-            if start - train < utc[0]:
-                continue
+            learned = start - train >= utc[0]
             windows = [t[(t["entry"] >= start - train) & (t["entry"] < start)] for t in tables]
-            scores = [prop_score(w, self.min_trades, self.min_win) for w in windows]
+            scores = [self._score(w) for w in windows] if learned else [-math.inf] * len(tables)
             best = int(np.argmax(scores))
-            raw = scores[best] - (1000.0 if scores[best] >= 500 else 0.0)
-            if not math.isfinite(scores[best]) or raw <= self.sit_out_below:
-                continue
+            if not math.isfinite(scores[best]):
+                if self.prior is None:
+                    continue  # stock behaviour: stay flat
+                best = self.prior
             rows = (utc >= start) & (utc < end)
             for col in ("entry", "exit", "stop_dist", "target_dist", "score"):
                 out.loc[rows, col] = frames[best].loc[rows, col].to_numpy()
@@ -131,9 +141,12 @@ class PropWalkForward(WalkForward):
             if self.keep_log:
                 w = windows[best]
                 self.log.append({"pair": pair, "from": str(start), "params": self.candidates[best],
-                                 "train_score": round(raw, 3), "qualified": scores[best] >= 500,
-                                 "train_win": round(float((w["r"] > 0).mean()), 3),
-                                 "train_avg_r": round(float(w["r"].mean()), 3)})
+                                 "learned": bool(learned and math.isfinite(scores[best])),
+                                 "train_score": round(float(scores[best]), 3)
+                                 if math.isfinite(scores[best]) else None,
+                                 "train_n": int(len(w)),
+                                 "train_win": round(float((w["r"] > 0).mean()), 3) if len(w) else None,
+                                 "train_avg_r": round(float(w["r"].mean()), 3) if len(w) else None})
         return out
 
 
