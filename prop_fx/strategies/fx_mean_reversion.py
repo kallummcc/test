@@ -100,7 +100,7 @@ class FxMeanReversion(Strategy):
         return out
 
 
-# Sizing (see the write-up): 1.25% per trade, 2 full losers = 2.5% = daily stop, well inside
-# FTMO's 5% daily limit; 5 slots cap simultaneous open risk at 6.25%.
-STRATEGY = FxMeanReversion(name="fx_mean_reversion", risk_pct=1.25, max_positions=5,
-                           daily_stop_pct=2.5)
+# Sizing (see the write-up): 1.5% per trade; daily stop = 2 full losers = 3.0%, well inside
+# FTMO's 5% daily limit; 5 slots cap simultaneous open risk at 7.5% (all stopped in one hour).
+STRATEGY = FxMeanReversion(name="fx_mean_reversion", risk_pct=1.5, max_positions=5,
+                           daily_stop_pct=3.0)
