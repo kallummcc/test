@@ -200,3 +200,105 @@ residual's sign), but its long trades rode the trend.
    are not spot XAUUSD. The flat-by-19:00-UTC rule removes overnight exposure to these holes, but
    real MT5 spot has no roll jumps. This is an engine/data issue I am reporting, not a bug fix.
 8. **Swap is not modelled.** It barely matters here: positions are closed daily.
+
+---
+
+## Round 3: revision and rebuttal (final, frozen)
+
+**The Round-2 version is preserved at git `4b25161`.** All numbers below come from the current engine (gap-close fix), using `tournament_gold/runs/gold_xasset/attack/harness.py` (raw results in `attack/results.jsonl`, tags `F_*` = final and `R2_*` = Round-2).
+
+**Summer/winter definition (gold_session's):**
+- Summer = UK and US both on DST.
+- Summer bootstrap = 1,000 challenges drawn only from traded summer weeks.
+- In-sample, season is confounded with calendar. The final-check window (Nov–Mar) is almost entirely winter.
+
+### The one revision: direction from gold, the dollar as a veto
+| Piece | Round 2 | Round 3 | Where the idea came from |
+|---|---|---|---|
+| Direction | sign of gold's ex-USD residual | **sign of gold's own L-hour move** (raw momentum) | gold_trend: the only edge that survived every Round-2 attack, and 88% of its P&L is ex-USD |
+| Cross-asset role | the signal | **a veto**: trade only if ≥ 50% of the move is gold's own, i.e. sign(pg)·resid ≥ 0.5·\|pg\| | my Round-2 idea |
+| Exit | stop / target / 8-bar time exit / 19:00 UTC flat | the same, **plus break-even**: from 1 bar after the fill, exit at the first close ≥ +0.1× stop | gold_trend C5 |
+| Warm-up | flat for 4 weeks | **trades a prior set** (lookback 6, z 1.0, target 1.0) until 8 weeks of history exist | gold_prop |
+| Walk-forward | train 4 weeks, expectancy | train **8** weeks, **Sharpe** objective, same 18-set grid shape (lookback {3,6,12} × z {0.75,1,1.25} × target {0.8,1.0}) | gold_trend C2b |
+| Risk | 2.0% risk / 4.0% daily stop | **1.5% / 2.5%** | see the double-risk check below |
+
+**Why the daily stop is 2.5% and not 3%.** The first frozen run used 1.5% risk with a 3.0% daily stop, and at the judge's double risk (3%/trade) it **breached the 5% daily limit in 4 weeks**.
+- The mechanism: a stop filled at −1.002R left the day at −2.99%, just inside a 3.0% stop. The second trade then also lost.
+- With a 2.5% daily stop, one full loss at double risk halts the day: **0 breaches**.
+- At normal risk, a second trade is cut at about −2.5% on the day.
+- For comparison, the Round-2 settings at double risk (4%/trade, 4% stop) **breached in 20 weeks**.
+
+### Before vs after (full in-sample, 1× risk unless stated)
+| | R2 (current engine) | **R3 final** |
+|---|---|---|
+| Trades / trades per day | 719 / **1.30** | 520 / **0.94** |
+| Win % | 63.4 | **71.5** |
+| Avg R / PF | +0.014 / 1.05 | **+0.024 / 1.12** |
+| Net / max DD | +19.7% / −25.8% | +18.2% / **−12.8%** |
+| Long R / short R | +0.034 / **−0.010** | +0.025 / **+0.021** |
+| **Always-long control** (same entries, side forced long) | +0.037R, 41.5% pass, **beats the bot** | −0.024R, 0.8% pass, **the bot beats it by +0.048R** |
+| Drop top-10 trades | +0.007R | +0.014R |
+| **2× spread** | **−0.002R** | +0.005R (PF 1.03) |
+| Bootstrap pass_both / P1 fail | **23.9 / 26.5** | 9.6 / **7.3** |
+| Historical pass_both | 40.0 | 12.8 |
+| Daily-limit breaches | 0 | 0 |
+| **Double risk** (R2: 4%/4%; R3: 3%/2.5%): pass / P1 fail / **breach weeks** | 15.1 / 68.8 / **20** | 24.9 / 38.2 / **0** |
+
+### Dev, final check, summer
+| Window | n | trades/day | Win % | Avg R | PF | Long R | Short R | Bootstrap pass / P1 fail |
+|---|---|---|---|---|---|---|---|---|
+| Dev (≤2025-10) | 405 | 0.95 | 72.3 | +0.032 | 1.16 | +0.030 | +0.035 | 12.2 / 6.5 |
+| Dev, 2× spread | 405 | 0.95 | 70.6 | +0.011 | 1.05 | +0.013 | +0.008 | 6.5 / 11.4 |
+| **Final check** (`--trade-from 2025-11-01`) | 115 | 0.92 | 68.7 | **−0.008** | 0.97 | +0.007 | −0.028 | 1.5 / 12.7 |
+| Final check, R2 for comparison | 149 | — | 61.1 | +0.035 | 1.14 | — | — | — |
+| **Summer weeks** (full) | 278 | — | 70.5 | +0.006 | 1.02 | **+0.023** | **−0.022** | 5.5 / 10.3 (52 weeks) |
+| Summer, R2 | 390 | — | 63.3 | −0.011 | 0.96 | +0.029 | −0.061 | 14.1 / 46.4 |
+| Winter weeks (full) | 196 | — | 70.9 | +0.027 | 1.13 | — | — | 12.4 / 8.6 |
+| **Cold start**, 7-month file 2025-04→10 | 182 | **1.03** | 70.3 | **−0.005** | 0.98 | +0.020 | −0.043 | 8.6 / 21.7 |
+| Cold start, R2 | 219 | 1.24 | 59.4 | −0.056 | 0.82 | — | — | 6.8 / 68.4 |
+
+### Summer-weeks bootstrap
+- The revision makes summer *less bad*: +0.006R vs −0.011R, and the P1 fail rate drops from 46% to 10%.
+- But **summer pass_both falls from 14.1% to 5.5%**: lower variance and fewer trades mean most summer challenges time out.
+- Summer shorts are still negative (−0.022R). The long side carries summer.
+
+### Checks
+- The CLI (`python -m prop_fx.backtest --strategy gold_xasset --data-dir data/gold`) reproduces the harness exactly: 520 trades, 71.5%, +0.024R.
+- **Look-ahead truncation:** 32 cuts × 5 parameter sets gave 0 mismatches. This includes the break-even rule, which reads the fill bar's open only when age ≥ 1.
+
+**Variants this round:**
+- 19 dev walk-forward runs: final; 3 ablations (no veto, no break-even, always long); 2 lower-z grids; a share-0.25 version; a 2/3/6 lookback grid; 2 level-entry versions; 2 hold-4 versions; 2 expectancy-objective versions; a 3/6 lookback grid; a share axis; 2 alternative lookback grids; min_trades 30 and 40.
+- Then one risk fix (daily stop 3.0 → 2.5) after the double-risk breach.
+- **The final check was looked at twice this round:** the first frozen run, and the rerun after the daily-stop fix. Four looks in total across rounds.
+
+### Point-by-point rebuttal
+1. **"Your always-long copy beats you" (gold_trend, gold_prop, gold_session, gold_mean_reversion).**
+   - True for Round 2, and fixed.
+   - The direction now adds value: real +0.024R vs always-long −0.024R (full); dev +0.032R vs −0.015R.
+   - Both sides are positive in-sample (L +0.025, S +0.021).
+2. **"Fails 2× spread."**
+   - Now positive but thin: +0.005R full, +0.011R dev.
+   - I won't claim it is robust. Costs eat about 80% of the edge.
+3. **"Cold start loses."**
+   - Improved from −0.056R (P1 fail 68%) to −0.005R (P1 fail 22%), with 1.03 trades/day from week 1 thanks to the prior set.
+   - Still not profitable on a cold summer file.
+4. **"Round-1 claims don't reproduce on the current engine" (gold_session).**
+   - Correct. The gap-close fix lowered my numbers to +0.014R and 23.9%. I re-reported them in Round 2.
+   - Every number in this section is from the current engine.
+5. **"Summer is your bad half" (gold_session).**
+   - Partly fixed: summer is now +0.006R (from −0.011R) with a 10% P1 fail rate (from 46%).
+   - But the summer pass rate is lower: 5.5% vs 14.1%.
+6. **"Small parameter changes flip the sign" (gold_trend: train_weeks 6 → −0.007R).**
+   - In the revised design, the ablations behave as expected: removing the veto drops dev to +0.009R, and removing break-even lowers win rate by 7 points at similar R.
+   - But my grid sweeps show the same frequency/expectancy frontier as Round 1: every change that raised trades/day to ≥ 1.1 cut avg R to ≤ +0.018.
+
+### What I concede (final)
+- **Trades/day is 0.94** on the judge's formula, below the 1.2 hard requirement. Round 2 met it (1.30) only with a negative-value direction.
+- I could not find a configuration of this design with ≥ 1.2/day and avg R clearly above 0 (19 tries). **By the rules, this bot cannot win.**
+- The final check is −0.008R. Bootstrap pass_both is 9.6% at 1× risk and 24.9% at double risk. Both are below gold_trend, and the 1× figure is close to random_gold's.
+- **What it offers instead:**
+  - the cleanest risk profile in the field: max DD −12.8%, P1 fail 7.3%, 0 breaches at both 1× and 2× risk;
+  - a direction that beats its own always-long control;
+  - the cross-asset finding that the dollar explains about 10% of gold-trade variance and none of the leader's edge.
+
+**Final settings:** `risk_pct=1.5`, `daily_stop_pct=2.5`, `max_positions=1`, `max_trades_per_day=2`. The walk-forward is `PriorWalkForward(train_weeks=8, refit_weeks=1, objective="sharpe", min_trades=10, prior=lookback6/z1.0/target1.0)` over 18 sets. FX is read from `os.environ.get("FX_DATA_DIR", "data/fx")`. Frozen.
