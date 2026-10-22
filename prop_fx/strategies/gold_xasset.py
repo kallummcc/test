@@ -24,9 +24,11 @@ Rules (base strategy, one parameter set)
    gold_trend): from `be_after` bars after the fill, exit at the first close that is
    >= `be_r` x stop in profit; time exit `hold` bars after the signal; flat at the close of
    the 19:00 UTC bar, no signals 19-21 UTC (futures roll / holiday holes sit in the break).
-6. Account: 1 position, max 2 trades a day, risk 1.5% / daily stop 3.0%. Two full losers =
-   3.0%. At the judge's double-risk test (3% a trade, same 3% daily stop) one full loss
-   halts the day, so a day is capped near 3% (+ stop slippage), still under FTMO's 5%.
+6. Account: 1 position, max 2 trades a day, risk 1.5% / daily stop 2.5%. After one full
+   loser (-1.5%) a second trade may run until the day is -2.5% (worst ~ -3% with slippage).
+   At the judge's double-risk test (3% a trade, same 2.5% stop) one full loss halts the day.
+   (A 3.0% daily stop breached the 5% limit 4 times at double risk: a -1.002R stop left the
+   day at -2.99%, just inside the stop, and the second trade then lost too.)
 
 `STRATEGY` = PriorWalkForward (a WalkForward subclass, idea from gold_prop): every Monday
 it re-picks the best of 18 sets on the trailing 8 weeks (Sharpe objective, as in
@@ -100,6 +102,7 @@ class GoldXAsset(Strategy):
     be_after: int = 1  # 0 = off; else break-even exit from this many bars after the fill
     be_r: float = 0.1
     flat_hour: int | None = 19
+    fresh_only: bool = True  # True: only the bar where |z| crosses z_th; False: every bar beyond it
     long_only: bool = False  # diagnostics only (always-long control)
 
     def features(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -121,7 +124,9 @@ class GoldXAsset(Strategy):
         out = df.copy()
         f = self.features(df)
         z = f["zg"] if self.direction == "raw" else f["zr"]
-        fresh = (z.abs() > self.z_th) & ~(z.shift(1).abs() > self.z_th) & z.notna()
+        fresh = (z.abs() > self.z_th) & z.notna()
+        if self.fresh_only:
+            fresh &= ~(z.shift(1).abs() > self.z_th)
         side = np.sign(z)
         ok = fresh.copy()
         if self.gold_share is not None:
@@ -208,10 +213,10 @@ class PriorWalkForward(WalkForward):
         return out
 
 
-# Risk: 1.5% a trade, max 2 trades/day, 3.0% daily stop (two full losers). At double risk
-# (3%/trade, same 3% stop) one loss halts the day.
+# Risk: 1.5% a trade, max 2 trades/day, 2.5% daily stop. At double risk (3%/trade, same
+# 2.5% stop) one full loss halts the day.
 BASE = GoldXAsset(name="gold_xasset_base", risk_pct=1.5, max_positions=1,
-                  max_trades_per_day=2, daily_stop_pct=3.0, pairs=("XAUUSD",))
+                  max_trades_per_day=2, daily_stop_pct=2.5, pairs=("XAUUSD",))
 
 # 18 sets: lookback x trigger threshold x target. Stop 2 ATR, hold 8, break-even from bar 1.
 CANDIDATES = grid(lookback=[3, 6, 12], z_th=[0.75, 1.0, 1.25], target_atr=[0.8, 1.0])

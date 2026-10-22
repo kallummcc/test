@@ -210,3 +210,138 @@ strategy's shorts are less bad (−0.035 vs −0.106R) and its longs slightly be
 9. **Trades/day definition.** The engine divides by every UTC date with bars, Sundays included,
    so 1.37/day is about 1.6 per weekday. The 2-trade cap and one-position limit bind on most
    days.
+
+---
+
+## Round 3: revision & rebuttal (final, frozen)
+
+### The one revision (a package of related changes aimed at the attacks and the summer hold-out)
+
+1. **Direction = gold_trend's trailing-momentum sign, on DST-correct local clocks.**
+   Each slot goes with sign(close − close 12 or 24 bars ago). The lookback is a learned axis.
+   This replaces my session-move follow/fade, which added only +0.008R over always-long.
+   - The **London slot fills at 09:00 London**; the **NY slot at 09:00 or 10:00 New York**
+     (learned).
+   - In BST/EDT weeks, which is the whole Apr–Oct hold-out, that is 08:00 / 13:00 UTC. That is
+     exactly gold_trend's summer clock. My Round-2 critique showed its edge does not follow the
+     08:00-local clock.
+   - Fades are removed.
+2. **The bail-out delay is learned.** The bail-out exit (bank the first close ≥ 0.25 ATR in
+   profit) may wait 1 or 2 bars (`bail_after ∈ {1, 2}`). This adapts gold_trend's `be_after`.
+3. **Prior warm-up set**, stolen from gold_prop. `PriorWalkForward` trades a fixed default
+   candidate (12h momentum, NY 09:00, target 0.6, bail after 1 bar) in weeks where it can't
+   learn yet. It is no longer flat for the first 12 weeks.
+4. **`daily_stop_pct` 3.5 → 2.0, for the judge's double-risk scoring.** The daily stop counts
+   realised plus floating losses.
+   - My first Round-3 build used 3.0. At 2× risk (3%/trade) it produced **12 daily-limit breach
+     weeks**. A first trade that time-exited just under −3% didn't halt the day, so a second
+     full 3% loser followed.
+   - At 2.0%, any trade is cut once the day reaches −2% and the day halts. Worst Prague day:
+     −3.0% at 1× and −4.6% at 2×. **0 breaches at either.**
+   - Risk stays at 1.5%/trade, with `max_trades_per_day=2`, `max_positions=1`, and the
+     WalkForward wrapper. The grid has 16 sets: mom_hours {12, 24} × ny_entry {9, 10} ×
+     tgt_r {0.6, 0.8} × bail_after {1, 2}, with train 12 weeks, weekly refit and the
+     expectancy objective.
+
+**Data-use disclosure.**
+- The final-check window is no longer clean. I looked at it in Round 1. Round 2 critiques of
+  every bot, including the season split, used the full sample. The Round-3 design borrows
+  choices validated on full data (London 09:00 from critics' ±1h tests, gold_trend's
+  momentum).
+- **Treat every number below as in-sample.** The only clean test is the judge's hold-out.
+
+**Round-3 variants tried (6), all full-sample:**
+- R3 with daily stop 3.0 (1× and 2× risk);
+- its London-entry neighbours 08 and 10, and no bail-out;
+- **R3a = R3 + daily stop 2.0 (chosen)**;
+- R3b, where the learner also chooses between momentum and my Round-2 follow/fade per slot
+  (24 sets), at 1× and 2×.
+
+Before seeing R3a vs R3b, I fixed the selection rule: (1) hard requirements, (2) summer-week
+bootstrap, (3) 2× spread, (4) edge over always-long.
+
+| | R3a | R3b |
+|---|---|---|
+| Summer bootstrap | 29.5% | 30.8% (tie) |
+| 2× spread | **+0.007R** | −0.009R |
+| Real − always-long | **+0.028R** | +0.006R |
+
+So R3a was chosen.
+
+### Before → after (current engine, default costs, 2,000 bootstrap challenges)
+
+| Run | Version | Trades | Trades/day | WR % | Avg R | PF | Max DD | Boot pass_both / P1 fail | Hist pass_both / P1 fail | Breaches |
+|---|---|---|---|---|---|---|---|---|---|---|
+| **Full** | R2 | 757 | 1.37 | 61.6 | +0.011 | 1.04 | −13.3 | 18.5 / 23.2 | 14.9 / 10.3 | 0 |
+| | **R3** | 891 | **1.61** | **60.8** | **+0.028** | **1.11** | −20.5 | **32.4 / 18.8** | 29.4 / 17.6 | 0 |
+| Dev (→2025-10-31) | R2 | 564 | 1.32 | 63.3 | +0.026 | 1.10 | −13.3 | 26.2 / 16.9 | 21.3 / 9.8 | 0 |
+| | R3 | 692 | 1.62 | 60.4 | +0.020 | 1.07 | −20.5 | 28.0 / 22.4 | 23.9 / 22.4 | 0 |
+| Final check (from 2025-11) | R2 | 193 | — | 56.5 | −0.034 | 0.88 | — | 1.5 | — | 0 |
+| | R3 | 199 | 1.59 | 62.3 | +0.057 | 1.27 | −8.2 | 49.2 / 7.2 | 36.4 / 0.0 (n=11) | 0 |
+| **Full, 2× spread** | R2 | 757 | 1.37 | 60.6 | −0.005 | 0.98 | −21.1 | 12.3 / 31.2 | 12.4 / 20.2 | 0 |
+| | **R3** | 891 | 1.61 | 59.8 | **+0.007** | 1.02 | −29.0 | 19.7 / 28.6 | 12.8 / 29.1 | 0 |
+| Dev, 2× spread | R3 | 692 | 1.62 | 59.2 | −0.002 | 0.99 | −29.0 | 17.2 / 33.0 | 12.3 / 38.5 | 0 |
+| Final, 2× spread | R3 | 199 | 1.59 | 61.8 | +0.040 | 1.18 | −8.7 | 34.3 / 10.8 | — | 0 |
+| Cold start (Apr–Oct 2025 file only) | R2 | 165 | **0.94** | 63.6 | 0.000 | — | — | 8.2 | — | — |
+| | **R3** | — | **1.67** | 62.2 | **+0.035** | 1.14 | — | **38.2 / 9.3** | — | — |
+| **Double risk (3%/trade, daily stop 2.0)** | R3 | 816 | 1.48 | 60.7 | +0.025 | 1.10 | — | **42.5 / 38.4** | 35.1 | **0** (worst day −4.6%) |
+| random_gold | — | 720 | 1.30 | 58.9 | +0.009 | 1.03 | −13.7 | 7.0 / 12.2 | 1.2 / 8.1 | 0 |
+
+**Summer-time weeks only** (UK and US both on DST, the hold-out clock; 52 traded weeks):
+
+| Version | Trades | WR % | Avg R | PF | Long R | Short R | Summer-only bootstrap pass_both / P1 fail |
+|---|---|---|---|---|---|---|---|
+| R2 | 367 | 64.3 | +0.032 | 1.12 | +0.070 | −0.017 | 38.3 / 16.6 (40 weeks) |
+| **R3** | 489 | 61.1 | +0.027 | 1.10 | +0.070 | **−0.037** | **29.5 / 20.2** |
+| R3, 2× spread | — | — | — | — | — | — | 17.8 / 33.1 |
+| R3 at double risk | 444 | 60.8 | +0.015 | 1.06 | +0.049 | −0.038 | 37.8 / 41.6 |
+| (gold_trend, Round-2 measurement) | 353 | 70.8 | +0.044 | 1.21 | +0.065 | +0.014 | 39.1 / 7.2 |
+
+**Long / short, R3:**
+
+| Period | Longs (n / WR / avg R) | Shorts (n / WR / avg R) |
+|---|---|---|
+| Full | 524 / 63.0% / +0.035 | 367 / 57.8% / **+0.019** |
+| Dev | 404 / 63.9% / +0.048 | 288 / 55.6% / −0.019 |
+| Final | 120 / 60.0% / −0.008 | 79 / 65.8% / +0.155 |
+
+Shorts now contribute over the full period, but not in dev or in summer weeks.
+
+**Edge vs drift.**
+- **R3 −** its own always-long version (same clocks, exits, learner, daily stop 2.0) =
+  **+0.028 − 0.000 = +0.028R**, and 32.4% vs 14.2% bootstrap.
+- Round 2 was +0.008R.
+- Drop the top-10 trades: **+0.019R** (PF 1.07). Round 2 was 0.000.
+
+### Point-by-point rebuttal
+
+| Attack (who) | Round-2 fact | Round-3 answer |
+|---|---|---|
+| "Barely beats always-long, +0.008R" (gold_trend, gold_prop, gold_mr) | True | Now **+0.028R** over its own always-long (32.4% vs 14.2% pass). The direction signal is gold_trend's, which my critique identified as the only one that survives this test. **Conceded:** the gain comes from adopting a rival's signal, not from my session logic. |
+| "Zero edge without the top-10 trades" (gold_xasset, gold_mr) | 0.000R | **+0.019R**, PF 1.07 |
+| "Failed the final check" (all) | 56.5%, −0.034R | 62.3%, +0.057R, 49.2%. **But this window is now contaminated** (see disclosure). I don't count it as evidence. |
+| "Cold start 0.94/day" (gold_prop, gold_xasset) | True | **1.67/day**, 62.2%, +0.035R on a cold Apr–Oct 2025 file (prior warm-up set) |
+| "Bail-out buys WR at half the expectancy" (gold_trend) | True: no bail gave 54.9%, +0.029R | Still partly true. Without the bail, R3 makes +0.003R at 56.0% WR; with it, 60.8% and +0.028R. In R3 the bail now *adds* expectancy, because momentum trades that go green early tend to give it back by the time exit. The WR and expectancy now move together, which is the opposite of the brief's trap. |
+| "London hour 08 sits on a slope" (gold_prop, gold_xasset, gold_mr) | 07 −0.009R, 09 +0.026R | London is now **09:00 local**. Neighbours (measured on the daily-stop-3.0 build): 08 +0.025R, 10 +0.011R. Positive on both sides, so not a knife-edge, although 08 is fractionally better overall. In summer, 08 local gives −0.000R and 10 gives +0.017R. |
+| "2× spread negative" (all) | −0.005R | +0.007R, PF 1.02 full. Dev at 2× is still −0.002R. **Conceded:** the edge is about one spread-unit. |
+
+### What is still weak (honest)
+1. **Summer is not better than Round 2.**
+   - R3's summer-only bootstrap is 29.5%, vs 38.3% for R2. Summer shorts lose −0.037R.
+   - The full-sample improvement came mostly from winter and the (contaminated) final check.
+   - I chose R3 anyway: it beats R2 on every full-sample test (2× spread, top-10, always-long
+     gap, cold start, double-risk safety), while R2's summer number rests on a NY slot whose
+     follow/fade choice adds nothing over always-long.
+2. **The edge is about +0.03R, roughly one spread unit.** Phase-1 fails are 19% at 1× and 38% at
+   2× risk.
+3. **Expected hold-out result** (summer clock): about 60% WR, +0.02–0.03R, and a pass_both of
+   about 25–30% at 1×. That is clearly above random_gold (7%) and well below gold_trend's
+   summer ~39%.
+4. **Double risk: pass up, safety down.** It raises bootstrap pass_both to 42.5% (summer
+   37.8%) but **Phase-1 fails to 38–42%**. The 2.0% daily stop keeps every day under the 5%
+   limit in-sample; the worst was −4.6%. Only 0.4% of headroom is left for a gap through a stop.
+
+Files:
+- `prop_fx/strategies/gold_session.py` (final; Round 2 is at git 4b25161)
+- `tournament_gold/runs/gold_session/r3/`
+- `tournament_gold/runs/gold_session/r3f/` (final CLI JSONs and trades)

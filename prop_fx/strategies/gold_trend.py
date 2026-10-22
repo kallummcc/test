@@ -181,13 +181,15 @@ class PriorWalkForward(WalkForward):
         return out
 
 
-# Final configuration after the learning cycles in tournament_gold/gold_trend.md (C5).
+# Final configuration: Round-1 C5 + Round-3 revision (warm-up prior), see gold_trend.md.
 BASE = GoldTrend(
     name="gold_trend_base",
     entry_mode="clock",  # London (08 UTC) and New York (13 UTC) decisions, with the momentum
     clock_hours=(8, 13),
     risk_pct=1.5,  # two full losses = 3%: still 2% under the 5% daily limit
-    daily_stop_pct=2.5,  # after one loss, a second trade floating -1% more halts the day
+    daily_stop_pct=2.5,  # after one loss, a second trade floating -1% more halts the day.
+    # At double risk (3%/trade) a single full loss already trips it, so the worst normal
+    # day is one stop (~3%) plus slippage: still about 2% under FTMO's 5%.
     max_positions=1,
     max_trades_per_day=2,
     pairs=("XAUUSD",),
@@ -196,5 +198,10 @@ BASE = GoldTrend(
 CANDIDATES = grid(mom_hours=[6, 12, 24], stop_atr=[1.5, 2.5], target_r=[0.5, 0.7],
                   max_hold=[4, 8], be_after=[1, 2])  # 48 sets
 
-STRATEGY = WalkForward(name="gold_trend", base=BASE, candidates=CANDIDATES,
-                       train_weeks=12, refit_weeks=1, objective="sharpe", min_trades=15)
+# Round 3: traded while the learner has < 12 weeks of history (cold start) instead of
+# sitting flat. Each axis's modal choice in the dev-only (<= 2025-10) walk-forward log.
+PRIOR = dict(mom_hours=12, stop_atr=2.5, target_r=0.7, max_hold=8, be_after=1)
+
+STRATEGY = PriorWalkForward(name="gold_trend", base=BASE, candidates=CANDIDATES,
+                            train_weeks=12, refit_weeks=1, objective="sharpe", min_trades=15,
+                            prior=PRIOR)

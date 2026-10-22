@@ -3,16 +3,16 @@
 Thesis: a >=60% win rate that also passes FTMO comes from trade geometry and risk
 engineering placed on a modest, simple edge.
 
-Round-3 revision (one revision, three related changes, see tournament_gold/gold_prop.md):
+Round-3 revision (one revision, two related changes, see tournament_gold/gold_prop.md):
   1. DST-aware session clocks. Decisions are taken at fixed LOCAL times in each centre
-     (10:00 Tokyo, 10:00 London, 11:00 New York), not at fixed UTC hours. The hold-out
-     (Apr-Oct 2026) is summer time, when fixed UTC hours land one hour off the sessions.
-  2. Direction = sign of gold's own trailing `mom_hours` move (gold_trend's session
-     momentum, which is the only direction signal in the field that beats its own
-     always-long control), instead of the EMA slope. Long and short are symmetric.
-  3. Break-even scratch exit (gold_trend): from `be_after` bars after entry, take the
-     first close that is >= `be_r` x stop in profit. This buys win rate without a
-     smaller target.
+     (10:00 Tokyo, 11:00 London, 12:00 New York), not at fixed UTC hours. They are
+     anchored to summer time, when they equal the Round-2 fills (01/10/16 UTC). The
+     hold-out (Apr-Oct 2026) is summer time.
+  2. Break-even scratch exit (stolen from gold_trend) as a learned grid axis: from
+     `be_after` bars after entry (0 = off), take the first close >= `be_r` x stop in
+     profit. This buys a win-rate buffer above 60% without shrinking the target.
+  Tested and rejected: gold_trend's momentum direction on these sessions (dev avg R
+  -0.002), so direction stays the 24h EMA slope.
 
 Unchanged from Round 2:
   geometry  stop = stop_atr x ATR(24h), target = target_r x stop (target_r < 1).
@@ -43,7 +43,9 @@ from ..adaptive import WalkForward, _Fixed, grid, score_trades
 from . import Strategy, atr
 
 # (time zone, local hour of the FILL bar)
-SESSIONS = (("Asia/Tokyo", 10), ("Europe/London", 10), ("America/New_York", 11))
+# Summer-anchored: in BST/EDT these are exactly the Round-2 fills (01, 10, 16 UTC) that dev
+# validated (70% of dev trades were summer weeks); in winter they move with the sessions.
+SESSIONS = (("Asia/Tokyo", 10), ("Europe/London", 11), ("America/New_York", 12))
 
 
 def _local_hour(idx: pd.DatetimeIndex, tz: str) -> np.ndarray:
@@ -51,9 +53,9 @@ def _local_hour(idx: pd.DatetimeIndex, tz: str) -> np.ndarray:
 
 
 @dataclass
-class GoldSessionMomentum(Strategy):
+class GoldSessionTrend(Strategy):
     sessions: tuple = SESSIONS
-    dir_mode: str = "mom"           # "mom": sign of the trailing mom_hours move; "ema": R2 rule
+    dir_mode: str = "ema"           # "ema": 24h slope of EMA(trend_len); "mom": sign of the mom_hours move (rejected, R3)
     mom_hours: int = 12
     trend_len: int = 100            # EMA span, dir_mode="ema" only
     stop_atr: float = 2.0
@@ -183,14 +185,12 @@ class PropWalkForward(WalkForward):
 
 # Risk: 1.5% a trade, at most 2 trades a day and 1 position, so two full losses = 3% and
 # the 3% daily stop leaves a 2% buffer under FTMO's 5% daily limit for gaps and slippage.
-# At double risk (3% a trade), keep daily_stop_pct at 3.0: the first full loss then
-# halts the day (see the .md for the residual partial-loss case).
-BASE = GoldSessionMomentum(name="gold_prop_base", risk_pct=1.5, max_positions=1,
+BASE = GoldSessionTrend(name="gold_prop_base", risk_pct=1.5, max_positions=1,
                            max_trades_per_day=2, daily_stop_pct=3.0, pairs=("XAUUSD",))
 
-CANDIDATES = grid(mom_hours=[12, 24], stop_atr=[1.5, 2.0, 2.5], target_r=[0.5, 0.6, 0.7],
-                  be_after=[1, 2])  # 36 sets
-PRIOR = CANDIDATES.index({"mom_hours": 12, "stop_atr": 2.0, "target_r": 0.6, "be_after": 1})
+CANDIDATES = grid(stop_atr=[1.5, 2.0, 2.5, 3.0], target_r=[0.4, 0.5, 0.6, 0.7],
+                  be_after=[0, 1, 2])  # 48 sets; be_after=0 lets the learner switch break-even off
+PRIOR = CANDIDATES.index({"stop_atr": 2.0, "target_r": 0.6, "be_after": 1})
 
 STRATEGY = PropWalkForward(name="gold_prop", base=BASE, candidates=CANDIDATES,
                            train_weeks=12, refit_weeks=1, objective="prop",

@@ -168,12 +168,14 @@ class PriorWalkForward(WalkForward):
 #    In BST/EDT weeks (the Apr-Oct hold-out) that is 08:00 / 13:00(-14:00) UTC.
 #  * bail-out (bank the first close >= 0.25 ATR in profit) may wait 1 or 2 bars (learned).
 #  * a prior candidate is traded while the learner warms up (no flat first 12 weeks).
-# Risk: 1.5% per trade, one position, <= 2 trades per Prague day. daily_stop_pct=3.0:
-#  at 1.5% risk two full stops = 3.0% (the stop then only guards gaps); at the judge's
-#  DOUBLE risk (3% per trade) a single full stop halts the day, so a second loser can't
-#  push the day toward the 5% FTMO limit.
+# Risk: 1.5% per trade, one position, <= 2 trades per Prague day. daily_stop_pct=2.0
+#  (realised + floating): at 1.5% risk a full loser leaves room for one more trade, which
+#  is cut once the day reaches -2%; at the judge's DOUBLE risk (3% per trade) any trade is
+#  cut at -2% on the day and the day halts, so a near-stop time-exit loser can no longer be
+#  followed by a second full 3% loser (that happened with 3.0%: 12 breach weeks at 2x).
+#  Worst Prague day in-sample: -3.0% at 1x, -4.6% at 2x; 0 daily-limit breaches at either.
 BASE = GoldSession(name="gold_session_base", risk_pct=1.5, max_positions=1,
-                   max_trades_per_day=2, daily_stop_pct=3.0, pairs=("XAUUSD",),
+                   max_trades_per_day=2, daily_stop_pct=2.0, pairs=("XAUUSD",),
                    lon_mode="mom", ny_mode="mom", lon_entry=9, lon_exit=12,
                    ny_entry=9, ny_exit=12, stop_atr=1.5, tgt_r=0.6, bail_atr=0.25)
 
