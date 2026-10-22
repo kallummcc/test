@@ -14,14 +14,14 @@ Round-3 revision (one revision, two related changes, see tournament_gold/gold_pr
   Tested and rejected: gold_trend's momentum direction on these sessions (dev avg R
   -0.002), so direction stays the 24h EMA slope.
 
-Unchanged from Round 2:
+Unchanged from Round 2 (except the daily stop, see risk):
   geometry  stop = stop_atr x ATR(24h), target = target_r x stop (target_r < 1).
   calendar  no entries in the New York data window (08:00-10:59 NY local) or the daily
             break. Each position is flattened 1h before the next session, so the single
             slot frees up and the bot really trades ~2 a day.
   regime    no new entries while ATR(24) > 1.5 x its 20-day median (volatility shock).
-  risk      1.5% a trade, 1 position, max 2 trades a day, 3% daily stop. Two full
-            losses = 3%, a 2% buffer under FTMO's 5%.
+  risk      1.5% a trade, 1 position, max 2 trades a day, 1.5% daily stop (R3: was 3%),
+            sized so that even at double risk the worst day stays under FTMO's 5%.
   learning  PropWalkForward re-picks the set every Monday from the trailing 12 weeks
             only. Qualified sets (win >= 60% and avg R > 0) rank first, then total R +
             2 x worst day. Until 12 weeks exist it trades a fixed prior set instead of
@@ -183,10 +183,13 @@ class PropWalkForward(WalkForward):
         return out
 
 
-# Risk: 1.5% a trade, at most 2 trades a day and 1 position, so two full losses = 3% and
-# the 3% daily stop leaves a 2% buffer under FTMO's 5% daily limit for gaps and slippage.
+# Risk: 1.5% a trade, at most 2 trades a day and 1 position. The 1.5% daily stop ends the
+# day after one full loss, so the worst day is about 1.5% + one partial = 3%. It is chosen so
+# the bot stays safe if the judge DOUBLES risk_pct to 3% with this daily stop unchanged:
+# worst day < 1.5% + 3% = 4.5% < 5%. With a 3% daily stop, double risk breached the 5% limit
+# in 4 in-sample weeks (partial first loss, then a full second loss); with 1.5%, 0 weeks.
 BASE = GoldSessionTrend(name="gold_prop_base", risk_pct=1.5, max_positions=1,
-                           max_trades_per_day=2, daily_stop_pct=3.0, pairs=("XAUUSD",))
+                        max_trades_per_day=2, daily_stop_pct=1.5, pairs=("XAUUSD",))
 
 CANDIDATES = grid(stop_atr=[1.5, 2.0, 2.5, 3.0], target_r=[0.4, 0.5, 0.6, 0.7],
                   be_after=[0, 1, 2])  # 48 sets; be_after=0 lets the learner switch break-even off

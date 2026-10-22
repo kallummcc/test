@@ -2,13 +2,15 @@
 
 Base rule (GoldMR): gold's intraday session move tends to persist (we measured strong
 intraday momentum in dev), so we never fade the session trend. Instead we fade the
-*pullback* against it: when the session (opened 23:00 UTC) is up more than `trend_thr`
-hourly ATRs and an hourly bar closes down, buy (mirror for shorts). A daily regime filter
+*pullback* against it: when the session (opened at the CME reopen, 18:00 New York time,
+DST-aware since Round 3) is up more than `trend_thr` hourly ATRs and an hourly bar closes
+down, buy (mirror for shorts). A daily regime filter
 (close vs 20-day SMA) makes trades against the multi-day trend require a 2x stronger
 session move. High-win-rate geometry: target < stop, short time exit.
 
-`STRATEGY` wraps it in `prop_fx.adaptive.WalkForward`: every Monday it re-scores 54
-candidate sets on the trailing 12 weeks (objective: total R) and trades the winner.
+`STRATEGY` wraps it in `PriorWalkForward` (a `prop_fx.adaptive.WalkForward` subclass): every
+Monday it re-scores 54 candidate sets on the trailing 12 weeks (objective: total R) and trades
+the winner; while it has no history yet it trades a fixed middle-of-grid prior set.
 See tournament_gold/gold_mean_reversion.md for research, learning cycles and results.
 """
 
@@ -146,16 +148,25 @@ class PriorWalkForward(WalkForward):
         return out
 
 
-# Account settings: 1.5% risk per trade, at most 2 trades a day and one open position, so the
-# worst normal day is two full stops = 3.0% (= daily_stop_pct), leaving 2% headroom under
-# FTMO's 5% daily limit for gaps/slippage through a stop.
+# Account settings (Round 3).
+# - 1.5% risk per trade, at most 2 trades a day, one open position.
+# - daily_stop_pct=2.0: the day halts once closed + floating loss reaches 2%. One full stop
+#   (1.5%) still allows a second trade, so the worst normal day is about 2% + one stop = 3.5%.
+#   At the judge's DOUBLE risk (3% per trade), the first full loss halts the day, and the
+#   worst case is about 2% + 3% = 5% only if a partial loser is followed by a full one;
+#   in-sample at double risk there were 0 daily-limit breaches (vs 5 with a 3% daily stop).
 BASE = GoldMR(name="gold_mean_reversion", pull=1, refire=True, daily_align=20, against_mult=2.0,
-              risk_pct=1.5, max_positions=1, max_trades_per_day=2, daily_stop_pct=3.0,
-              pairs=("XAUUSD",))
+              clock="ny", risk_pct=1.5, max_positions=1, max_trades_per_day=2,
+              daily_stop_pct=2.0, pairs=("XAUUSD",))
 
-# 54 candidate sets; the walk-forward re-picks one every Monday from the trailing 12 weeks.
-GRID = grid(trend_thr=[0.4, 0.6, 0.8], target_atr=[0.6, 0.8, 1.0], stop_atr=[1.25, 1.5, 2.0],
+# 54 candidate sets (Round 3: trend_thr grid one step lower, for frequency).
+GRID = grid(trend_thr=[0.2, 0.4, 0.6], target_atr=[0.6, 0.8, 1.0], stop_atr=[1.25, 1.5, 2.0],
             max_hold_h=[3, 5])
 
-STRATEGY = WalkForward(name="gold_mean_reversion", base=BASE, candidates=GRID,
-                       train_weeks=12, refit_weeks=1, objective="expectancy", min_trades=10)
+# Traded while the learner has < 12 weeks of history (cold start) or no qualifying set: the
+# middle of the grid, not a tuned set.
+PRIOR = {"trend_thr": 0.4, "target_atr": 0.8, "stop_atr": 1.5, "max_hold_h": 3}
+
+STRATEGY = PriorWalkForward(name="gold_mean_reversion", base=BASE, candidates=GRID,
+                            train_weeks=12, refit_weeks=1, objective="expectancy",
+                            min_trades=10, prior=PRIOR)

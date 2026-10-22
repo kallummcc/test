@@ -240,3 +240,145 @@ Files:
 - Strategy: `prop_fx/strategies/gold_prop.py`
 - Scratch: `tournament_gold/runs/gold_prop/` (harness `h.py`, `replay.py`, `controls.py`,
   `variants.jsonl`, per-run JSON and trades)
+
+---
+
+## Round 3: revision and rebuttal (final, frozen)
+
+**Summary.** The revision makes the bot DST-aware and buys a wide win-rate buffer with a
+break-even exit. It also re-sizes the daily stop so that the user's double-risk scoring
+cannot breach FTMO's 5% limit.
+
+It does **not** improve in-sample expectancy:
+- Full-period avg R drops from +0.019 to +0.000.
+- The cost is in winter weeks. Summer weeks, i.e. the hold-out clock, stay positive.
+
+Every number below is on the current engine. Scripts are in `tournament_gold/runs/gold_prop/r3/`
+(`r3.py`, `r3.jsonl`, CLI JSONs). The Round-2 code is at commit 4b25161, with a copy in
+`runs/gold_prop/gold_prop_r2.py`.
+
+### The revision: one revision, three related changes
+
+1. **Summer-anchored local session clocks.** Fills are at 10:00 Tokyo, 11:00 London and
+   12:00 New York local time.
+   - In BST/EDT these are exactly the Round-2 fills (01/10/16 UTC). Those hours were
+     validated mostly on summer weeks: 70% of dev trades were in summer weeks.
+   - In winter the fills move with the sessions.
+   - The news block is now in NY local time (08:00–10:59 ET fills) rather than at fixed
+     UTC hours.
+2. **Break-even scratch exit**, stolen from gold_trend, as a learned grid axis
+   `be_after ∈ {0, 1, 2}`. From bar 1 or 2, it banks the first close at ≥ +0.1× the stop.
+   - The grid is now 4 stop × 4 target × 3 = 48 sets.
+   - The learner picked `be_after` 0 in 48 weeks, 1 in 40 and 2 in 9.
+3. **Daily stop 3.0% → 1.5%**, for the double-risk scoring (see below).
+
+**Tested and rejected, all on dev:**
+
+| Variant | Dev result |
+|---|---|
+| gold_trend's momentum direction (sign of the 12/24h move) on my sessions, with BE | avg R −0.002, pass 5.8% |
+| Same, without BE | +0.012R |
+| Same, on UTC clocks | −0.006R |
+| Winter-anchored clocks (10/10/11 local) | +0.020R |
+
+gold_trend's direction signal only works at its own clock. Direction stays my 24h EMA slope.
+
+### Before and after
+
+The "after" columns use the frozen file: 1.5% risk, 1.5% daily stop.
+
+| | R2 as submitted | R3 frozen | R3 with a 3% daily stop (for reference) |
+|---|---|---|---|
+| **Full**: WR / avg R / PF | 60.6 / +0.019 / 1.07 | 63.6 / +0.000 / 1.00 | 65.1 / −0.002 / 0.99 |
+| **Full**: boot pass_both / P1 fail / breaches | 23.9 / 20.2 / 0 | 8.8 / 19.6 / 0 | 11.1 / 25.8 / 0 |
+| **Dev** (≤ 2025-10): WR / R / pass_both | 61.4 / +0.036 / 32.4 | 65.5 / +0.002 / 10.8 | 66.2 / +0.006 / 15.8 |
+| **Final check** 2025-11→26-03: WR / R / pass_both | 57.7 / −0.043 / 4.5 | 57.1 / −0.009 / 3.6 | 60.9 / −0.030 / 0.8 |
+| **2× spread**, full: WR / R | 59.2 / −0.004 | 62.8 / −0.017 | 64.4 / −0.017 |
+| 2× spread, final check: WR / R | 56.5 / −0.059 | 56.5 / −0.016 | 59.8 / −0.044 |
+| **Summer weeks** (UK+US DST), full: n / WR / R | 431 / 62.9 / +0.058 | 412 / **67.5** / +0.040 | 431 / 68.9 / +0.048 |
+| Summer-only bootstrap: pass_both / P1 fail | 50.2 / 9.9 | 30.6 / **7.5** | 42.1 / 9.7 |
+| Summer at 2× spread: WR / R | – | 66.4 / +0.020 | 68.4 / +0.034 |
+| Winter weeks: n / WR / R | 279 / 57.0 / −0.036 | 276 / 58.0 / −0.063 | 281 / 59.8 / −0.070 |
+| **Cold start**, summer Apr–Oct 2025 file: WR / R / tpd | 65.4 / +0.089 / 1.48 | **72.3 / +0.078 / 1.44** | 74.6 / +0.098 / 1.48 |
+| Cold start: pass_both / P1 fail / worst day | 72.2 / 2.0 / −3.0% | 62.4 / **0.1** / **−1.96%** | 78.1 / 0.1 / −3.0% |
+| ±1h, all sessions: R (WR) | −0.006 (56.6) / −0.010 (60.5) | – | +0.006 (63.5) / +0.003 (65.0) |
+| Always-long, same everything: R | +0.013 | – | +0.007 (WR 59.2) |
+| Trades/day (CLI, full) | 1.42 | 1.37 | 1.42 |
+
+**Long vs short (R3 frozen, full):**
+- Longs: 465 trades, 66.5% WR, +0.023R.
+- Shorts: 291 trades, 59.1% WR, −0.038R.
+- On the cold summer file both sides pay: longs +0.062R, shorts +0.100R.
+
+**What the numbers say:**
+- The win rate now clears 60% with a 3–8pp buffer in every summer test, at ±1h and at
+  2× spread. In Round 2 those were exactly the attacks that pushed WR below 60.
+- On the summer cold start (the closest proxy to the hidden file), the Phase-1 fail rate
+  falls to 0.1% and the worst day to −1.96%.
+- In-sample avg R and the bootstrap pass rate are lower than Round 2, mainly because
+  winter weeks got worse.
+- The hold-out is all summer clock, but in-sample season and market regime are confounded.
+  I can't prove the winter loss stays in winter.
+
+### Double risk (risk_pct × 2 = 3%, daily stop unchanged)
+
+All runs are full period unless marked cold.
+
+| Daily stop | Breach weeks | Worst day | WR / avg R | pass_both / P1 fail | Cold summer pass_both |
+|---|---|---|---|---|---|
+| **3.0%** (my R2 setting) | **4** | **−5.95%** | 64.1 / +0.002 | 23.6 / 55.0 | 78.2 (worst day −4.2%) |
+| 2.0% | 0 | −3.93% | 64.2 / −0.001 | 26.8 / 46.3 | 77.8 |
+| **1.5% (frozen)** | **0** | **−3.01%** | 63.1 / **+0.028** | **42.8 / 25.9** | **83.0** (P1 fail 4.8) |
+| R2 at double risk (3% stop) | 8 | −5.99% | 59.5 / +0.018 | 27.2 / 55.0 | – |
+
+**Mechanism.** With a 3% daily stop and 3% risk, a first trade that loses only part of
+its stop (break-even or session exit at −2.x%) does not halt the day. A full second loss
+then takes the day past 5%. Two losses can no longer both fit under the limit.
+
+**Rule I'd recommend to every bot:** `daily_stop_pct + risk_pct < 5%` at the
+*highest* risk you might be run at. Then any day is at most "just under the stop" plus one
+full loss.
+- At 1.5% / 1.5% the worst day is about 3%.
+- At 3% / 1.5% it is under 4.5%.
+
+**Cost at base risk.**
+- The 1.5% stop halts the day after one full loss, which costs pass rate: full 11.1 → 8.8%,
+  cold summer 78 → 62%.
+- I accept that, because at double risk it lifts pass_both from 23.6 to 42.8% and removes
+  every breach.
+- **Recommended for the user: double risk with the 1.5% daily stop.** It is the best
+  configuration found: cold-summer pass_both 83.0%, P1 fail 4.8%, worst day −3.0%.
+
+### Point-by-point rebuttal
+
+1. **"Only +0.006R over always-long."** True in Round 2, and still true. R3's always-long
+   control is +0.007R against −0.002R (3% stop). My direction signal adds no expectancy
+   beyond gold's drift. I don't claim a directional edge.
+   - My claim is geometry and risk. With the same direction quality, the shell turns it
+     into a 63–72% WR with 0.1% Phase-1 fails on a cold summer file.
+   - Always-long at the same geometry wins only 59.2%.
+2. **"Dies at ±1h."** Partly fixed.
+   - R2 at ±1h: −0.006 / −0.010R, and WR fell below 60.
+   - R3 at ±1h: +0.006 / +0.003R, with WR 63.5 / 65.0%. Expectancy is still about zero,
+     but the hard requirements no longer flip.
+3. **"Dies under 2× spread."** Not fixed on the full period (−0.017R). In summer weeks it
+   survives: +0.020R, 66.4% WR. Small targets make costs a large share of each trade.
+   I concede this.
+4. **"Failed the final check."** It still does: 57.1% WR, −0.009R, now near break-even
+   instead of −0.043R. I didn't tune on it. This was look #3, run after freezing the
+   design. The window is winter-only, which is the clock the hold-out doesn't use.
+5. **"All gross return is dollar-explained"** (gold_xasset). I can't refute it: my
+   direction is a trend proxy, and gold's trend in 2024–26 was largely the dollar's. If
+   the dollar stops trending, I expect about 0R per trade. The protection is the risk
+   shell: worst day −3%, low P1 fail, and the prior set so the bot trades from day one.
+6. **What I still claim.**
+   - In the Round-2 tests it was the only bot meeting ≥ 1.2 trades/day on a cold file. It trades 1.44/day there now.
+   - It has 0 breaches at base *and* double risk.
+   - It has the lowest Phase-1 fail rate on the summer cold start (0.1%).
+   - Its win-rate buffer survives the hour-shift and cost attacks.
+   - If the judge's hold-out trends like 2025, it passes often (cold summer: 62% at base,
+     83% at double risk). If it doesn't, it should mostly time out rather than fail.
+
+**Variants in Round 3:** 8 dev variants (R2 replay, B, C, D, E, F, G, and H = final), then
+the frozen suite: full, final check, 2× spread, cold start, ±1h, always-long, and daily
+stops 3/2/1.5 at 1.5% and 3% risk. Final-check looks in total: 3.
