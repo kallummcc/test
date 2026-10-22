@@ -143,9 +143,11 @@ def daily_atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
 # ---------------------------------------------------------------- strategy
 @dataclass
 class FxStrength(Strategy):
-    lookback_days: float | tuple = 28.0  # ~4 weeks (Raza et al.: best Sharpe at 4w; MSSS: 1m)
+    # 1, 4 and 12 weeks (Raza et al. 1-4w; Menkhoff et al. 1-12m), each scaled by its
+    # cross-sectional dispersion and averaged, so no single look-back is cherry-picked.
+    lookback_days: float | tuple = (7.0, 28.0, 84.0)
     min_days: float = 7.0  # expanding window floor so short data sets still trade
-    k: int = 3  # strong set = top k, weak set = bottom k currencies
+    k: int = 4  # strong set = top k, weak set = bottom k currencies (4 = full split)
     rebalance_hour: int = 7  # Monday bar (UTC) whose close triggers the weekly rebalance
     rebalance_days: tuple[int, ...] = (0,)  # weekdays to rebalance (0 = Monday)
     stop_atr: float = 2.0  # x daily ATR(14)
@@ -232,4 +234,7 @@ class FxStrength(Strategy):
         return out
 
 
-STRATEGY = FxStrength(name="fx_strength", risk_pct=1.0, max_positions=3, daily_stop_pct=4.0)
+# risk 2%/trade x at most 4 positions, each currency used once (4 pairs = all 8 currencies,
+# no doubled currency bet). A 2-daily-ATR stop is rarely hit, so a typical week moves the
+# book a few %; the 4% daily stop keeps a bad day under FTMO's 5% limit.
+STRATEGY = FxStrength(name="fx_strength", risk_pct=2.0, max_positions=4, daily_stop_pct=4.0)

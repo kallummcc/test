@@ -1,4 +1,22 @@
-"""Session-based FX strategy (placeholder; final rules set after dev testing)."""
+"""fx_session: London-morning -> New York session continuation, with the daily trend.
+
+Final rules (mode="nycont", the defaults below), all clock times Europe/London so the
+UK DST shift is handled automatically (bars are labelled by their OPEN time):
+
+* Universe: the 7 USD majors (EURUSD GBPUSD USDJPY AUDUSD USDCAD USDCHF NZDUSD).
+* London-morning move M = close of the 12:00 bar (i.e. price at 13:00 London, ~08:00 NY,
+  the NY open) minus the open of the 07:00 bar (London open).
+* Trade only if |M| >= 1.0 x ATR(24, hourly) and sign(M) agrees with the daily trend
+  (last COMPLETED UTC daily close vs its 20-day SMA). Direction = sign(M).
+* Fill at the 13:00 London open. Stop = 3.0 x ATR(24). No take-profit.
+* Time exit: flat at the 20:00 London open (late NY session, before the illiquid rollover).
+* Ranking when several pairs signal at once: |M| / ATR (strongest London move first).
+* Risk 1.0% of initial balance per trade, max 3 positions (worst same-day full stop-out
+  ~3% < FTMO 5% daily limit), daily stop 4.0% as a gap/slippage guard rail.
+
+Other modes ("breakout", "sweep", "fixfade") are kept only so that the variants logged in
+tournament_fx/fx_session.md can be reproduced. See that file for evidence and caveats.
+"""
 
 from __future__ import annotations
 
@@ -22,20 +40,20 @@ def _session_frame(df: pd.DataFrame) -> pd.DataFrame:
 
 @dataclass
 class FxSession(Strategy):
-    mode: str = "sweep"  # "breakout" | "sweep" | "fixfade" | "nycont"
+    mode: str = "nycont"  # "breakout" | "sweep" | "fixfade" | "nycont"
     asia_end: int = 7  # Asian range = London-local bars 00:00 .. asia_end-1 (closes at asia_end)
-    win_start: int = 7  # first bar (London hour label) on which a signal may fire
+    win_start: int = 12  # signal bar (London hour label); nycont: 12 -> decided at 13:00
     win_end: int = 10  # last bar label on which a signal may fire
-    exit_hour: int = 16  # flatten at this London hour's open (the WM/R 4pm fix)
+    exit_hour: int = 20  # flatten at this London hour's open
     stop_buf_atr: float = 0.25  # extra stop buffer beyond the structural level (ATR units)
     min_stop_atr: float = 0.75
-    max_stop_atr: float = 4.0
+    max_stop_atr: float = 3.0  # nycont: the fixed stop, in ATR
     target_mode: str = "opposite"  # "opposite" side of range | "mid" | "r" (target_r * stop)
-    target_r: float = 1.5
-    min_range_atr: float = 1.0  # Asian range must be at least this many hourly ATRs
+    target_r: float = 0.0  # <= 0: no take-profit
+    min_range_atr: float = 1.0  # Asian range / London move must be >= this many hourly ATRs
     max_range_atr: float = 6.0
     atr_n: int = 24
-    trend_n: int = 0  # >0: only trade in the direction of close vs SMA(trend_n) of daily closes
+    trend_n: int = 20  # >0: only trade in the direction of close vs SMA(trend_n) of daily closes
     stop_mode: str = "mid"  # breakout: "mid" of Asian range | "opp" opposite side
 
     def prepare(self, df: pd.DataFrame, pair: str) -> pd.DataFrame:
@@ -60,6 +78,7 @@ class FxSession(Strategy):
         buf = self.stop_buf_atr * a
 
         trend = self._trend(df) if self.trend_n else pd.Series(0, index=df.index)
+        score = None
 
         if self.mode == "breakout":
             # session high/low touched so far today after the Asian range
@@ -114,6 +133,7 @@ class FxSession(Strategy):
             entry[sig_bar & big & (move < 0)] = -1
             stop[:] = self.max_stop_atr * a
             target[:] = self.target_r * stop
+            score = (move.abs() / a).replace([np.inf, -np.inf], np.nan).fillna(0)
         else:
             raise ValueError(self.mode)
 
@@ -121,18 +141,11 @@ class FxSession(Strategy):
             entry = entry.where(entry * trend > 0, 0)
         if self.mode in ("breakout", "sweep"):
             stop = stop.clip(lower=self.min_stop_atr * a, upper=self.max_stop_atr * a)
-            ok = entry != 0
-            if self.target_mode != "r" or self.mode == "breakout":
-                pass
-            # require a non-trivial target
-            ok &= target > 0.5 * stop if self.mode == "sweep" else ok
-            entry = entry.where(ok | (entry == 0), 0)
+            if self.mode == "sweep":  # require a non-trivial target
+                entry = entry.where((entry == 0) | (target > 0.5 * stop), 0)
             # first signal of the day only
             first = (entry != 0).astype(int).groupby(day).cumsum()
             entry = entry.where(first == 1, 0)
-        else:
-            if self.mode == "breakout":
-                pass
 
         if self.target_r <= 0:
             target[:] = np.nan
@@ -140,9 +153,10 @@ class FxSession(Strategy):
         out["exit"] = (s["hr"] == self.exit_hour - 1).to_numpy()
         out["stop_dist"] = stop
         out["target_dist"] = target
-        out["score"] = (target / stop).replace([np.inf, -np.inf], np.nan).fillna(0)
+        if score is None:
+            score = (target / stop).replace([np.inf, -np.inf], np.nan).fillna(0)
+        out["score"] = score
         return out
-
 
     def _trend(self, df: pd.DataFrame) -> pd.Series:
         """+1/-1: last COMPLETED UTC daily close vs its SMA(trend_n). No look-ahead."""
@@ -155,4 +169,7 @@ class FxSession(Strategy):
         return pd.Series(m["s"].fillna(0).to_numpy(), index=df.index)
 
 
-STRATEGY = FxSession(name="fx_session", risk_pct=1.0, max_positions=3, daily_stop_pct=3.0)
+USD_MAJORS = ("EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD", "USDCHF", "NZDUSD")
+
+STRATEGY = FxSession(name="fx_session", risk_pct=1.0, max_positions=3, daily_stop_pct=4.0,
+                     pairs=USD_MAJORS)
