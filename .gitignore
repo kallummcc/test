@@ -9,3 +9,4 @@ backtest_results/
 tournament/runs/
 tournament_fx/runs/
 tournament_gold/runs/
+prop_fx/strategies/_r2_*.py
