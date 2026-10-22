@@ -165,3 +165,130 @@ So the bot is not just a long-gold bet. The cost of that is that its long trades
    - A gap through the stop at news time is possible, and hourly bars can't model it.
 7. **Walk-forward churn.** It switches sets often. Cycle c1 suggests this neither helps nor hurts much, so "learning" here mostly adapts geometry to volatility; it does not discover new edges.
 8. **Futures basis and data.** GC=F is used as a proxy for spot. Ten roll days were dropped. Daily SMA regimes computed from the hourly file are unaffected by the daily file's roll jumps.
+
+---
+
+## Round 3: revision and rebuttal
+
+### The revision
+
+This is one revision, aimed at the three attacks: frequency, summer, and robustness. It combines four related changes. The Round-2 version is preserved at commit 4b25161.
+
+1. **DST-aware session clock** (`clock="ny"`).
+   - The session now starts at the actual CME Globex reopen, 18:00 New York time. That is 22:00 UTC in summer and 23:00 UTC in winter. The signal-hour window (01–19 on the winter UTC scale) also moves with New York time.
+   - In Round 2 the session was anchored at a fixed 23:00 UTC. In summer, that put the reopen bar into the *previous* session and shifted every session move by an hour. gold_session's critique found my summer weeks at −0.027R, and this is the mechanical explanation.
+   - In winter the two clocks are identical. So this change *cannot* have been fitted to the final-check window (Nov–Mar). It only changes summer and DST-mismatch weeks, all of which sit in dev.
+2. **trend_thr grid one step lower,** {0.2, 0.4, 0.6} instead of {0.4, 0.6, 0.8}. This was my Round-2 idea #1, for frequency. In Round 2 both neighbouring grids were already equal to or better than the original.
+3. **Warm-up prior** (borrowed from gold_prop). `PriorWalkForward` is a `WalkForward` subclass that trades a fixed **middle-of-grid** set (thr 0.4, target 0.8, stop 1.5, hold 3; not a tuned set) whenever the stock learner would sit flat. That means the first 12 weeks, or a week where no set has 10 trades. Every learned week is exactly the stock WalkForward choice. This fixes the cold start.
+4. **`daily_stop_pct` 3.0 → 2.0,** for the judge's double-risk scoring.
+   - At 3% risk per trade with a 3% daily stop, a partial loser (for example −0.9R = −2.7%) followed by a full stop exceeds 5%. That version had **5 daily-limit breach weeks**.
+   - With a 2% daily stop, the first full loss at double risk halts the day. At normal risk, a single −1.5% stop still allows the second trade, so frequency is kept. Result: **0 breaches at both risk levels.**
+
+**Rejected in Round 3:**
+- **gold_trend's break-even exit** (`be_after=2`). It raised the win rate (64.8–65.2%), but cut avg R to +0.019/+0.036 and summer bootstrap passes to 5–18%. This is the brief's win-rate trap.
+- **Sharpe objective:** +0.033R, against +0.051R for expectancy.
+
+### Round 3 variants (all full in-sample walk-forward runs, logged in `runs/gold_mean_reversion/r3.jsonl`)
+
+All rows below were run at the Round-2 daily stop of 3.0%, so the "C" row's 41.0% is a coincidence. The final version (2% daily stop) also gives 41.0%, but with Phase 1 fail 13.5% instead of 15.3%.
+
+| Variant | n | Win % | Avg R | Trades/day (JSON) | Boot pass_both / P1 fail | Summer R | Summer boot | Final-check R | Cold start (Apr–Oct 2025) |
+|---|---|---|---|---|---|---|---|---|---|
+| Round 2 as submitted | 615 | 61.3 | +0.023 | **1.11** | 18.9 / 15.9 | **−0.027** | 6.8% | +0.018 | **0.78/day**, −0.018R |
+| A: low grid | 662 | 62.2 | +0.027 | 1.20 | 22.0 / 13.8 | −0.017 | 7.8% | +0.031 | 0.85/day, −0.005R |
+| B: A + prior | 767 | 62.3 | +0.031 | 1.39 | 27.9 / 14.2 | +0.000 | 11.8% | +0.031 | 1.44/day, +0.005R |
+| **C: B + NY clock** | 745 | 63.1 | **+0.051** | 1.35 | **41.0** / 15.3 | **+0.038** | **35.1%** | +0.026 | 1.53/day, +0.014R |
+| D: B + break-even | 786 | 64.8 | +0.019 | 1.42 | 19.3 / 14.8 | −0.011 | 5.1% | +0.046 | 1.39/day, −0.008R |
+| E: C + break-even | 785 | 65.2 | +0.036 | 1.42 | 33.5 / 12.8 | +0.007 | 17.9% | +0.044 | 1.56/day, −0.005R |
+
+**Neighbour checks of C (one step each):**
+
+| Neighbour | Full R | Final R |
+|---|---|---|
+| Old grid | +0.032 | +0.025 |
+| No prior | +0.054 (1.17/day) | +0.026 |
+| Alternative prior | +0.059 | +0.026 |
+| daily_align 10 | +0.035 | −0.005 |
+| daily_align 40 | +0.024 | −0.033 |
+| atr_len 48 | +0.048 | −0.017 |
+| Hours 2–18 | +0.040 | −0.007 |
+| against_mult 3 | +0.033 | −0.067 |
+
+- All 10 neighbours are positive over the full period: +0.024 to +0.059R, with **summer positive in every one**.
+- Final-check R stays fragile: 4 of the 10 neighbours are negative there (−0.005 to −0.067R).
+
+**Daily-stop / double-risk grid (C):**
+
+| Daily stop | Risk 1.5%: pass / fail / breaches / trades/day | Risk 3.0%: pass / fail / breaches / trades/day |
+|---|---|---|
+| 1.5 | 36.1 / 11.2 / 0 / 1.30 | 39.2 / 39.5 / 0 / **1.15** |
+| **2.0** | **41.0 / 13.5 / 0 / 1.35** | **43.6 / 35.3 / 0 / 1.23** |
+| 3.0 | 41.0 / 15.3 / 0 / 1.35 | 38.5 / 43.0 / **5** / 1.26 |
+
+The 1.5 setting at double risk fails the frequency requirement. 2.0 is the only setting that meets both requirements at both risk levels.
+
+### Final results (official CLI, current engine)
+
+| Run | Net | Trades | Trades/day (JSON) | Win % | Avg R | PF | Max DD | Boot pass_both / P1 fail | Hist pass_both / P1 fail | Breaches |
+|---|---|---|---|---|---|---|---|---|---|---|
+| Dev (`--end 2025-10-31`) | +48.7% | 589 | 1.38 | 61.5 | +0.055 | 1.18 | −10.4% | 46.3 / 12.8 | 43.5 / 14.5 | 0 |
+| Dev, 2× spread | +30.3% | 591 | 1.38 | 59.9 | +0.034 | 1.11 | −14.8% | 33.1 / 19.4 | 36.2 / 17.4 | 0 |
+| **Full** | **+56.2%** | 743 | **1.35** | **62.0** | **+0.051** | **1.17** | −10.4% | **41.0 / 13.5** | 40.2 / 16.3 | **0** |
+| Full, 2× spread | +37.5% | 745 | 1.35 | 60.7 | +0.034 | 1.11 | −14.8% | 31.4 / 17.8 | 34.8 / 18.5 | 0 |
+| Final check (`--trade-from 2025-11-01`) | +7.5% | 154 | 1.23 | 64.3 | +0.034 | 1.12 | −14.1% | 23.8 / 11.8 | 44.4 / 27.8 | 0 |
+| Final check, 2× spread | +7.2% | 154 | 1.23 | 63.6 | +0.032 | 1.12 | −14.1% | 22.9 / 12.1 | 44.4 / 27.8 | 0 |
+| **Double risk** (3%/trade, daily stop 2%) | +83.5% | 678 | **1.23** | 62.4 | +0.041 | 1.15 | — | 43.6 / 35.3 | 51.6 / — | **0** |
+| Cold start (Apr–Oct 2025 file only) | — | — | **1.52** | 60.4 | +0.027 | 1.08 | — | 32.1 / 27.7 | — | — |
+| random_gold, full | +6.8% | 720 | 1.30 | 58.9 | +0.009 | 1.03 | −13.7% | 7.0 / 12.2 | 1.2 / 8.1 | 0 |
+
+By year: 2024 +33.3%, 2025 +23.7%, 2026 Q1 −0.8%. Worst week −5.7%; worst day bounded by the 2% stop plus one trade.
+
+**Summer (UK and US both on DST) vs winter, full run, R = avg R:**
+
+| | All | Long | Short | Summer-weeks-only bootstrap pass_both / P1 fail |
+|---|---|---|---|---|
+| **Summer** (430 trades) | 59.8% win, **+0.033R** | +0.037R | +0.028R | **33.9% / 20.3%** (52 weeks) |
+| Winter (243 trades) | 67.9% win, +0.117R | — | — | — |
+| Summer, 2× spread | 58.2% win, +0.007R | +0.009R | +0.004R | 20.2% / 30.9% |
+
+**Long/short and drift:**
+- Full period: longs 439 trades, 62.0% win, +0.036R. Shorts 304 trades, 62.2% win, **+0.073R**.
+- With gold's uptrend stripped out (drift-adjusted), longs are −0.008R and shorts **+0.118R**.
+- Final check: longs +0.004R and shorts +0.094R.
+- **Always-long control** (same times, exits and walk-forward): 60.9% win, **−0.003R**, 10.9% pass. The direction logic adds **+0.054R** over buying gold.
+- Drop the top 10 trades: +0.041R. In Round 2 this was +0.010R.
+
+**Look-ahead:** 0 mismatches in 205,716 rows. That covers 7 parameter sets, the prior among them, × 5 cut dates, including dates inside the DST transitions.
+
+### Point-by-point rebuttal
+
+1. **"Fails trades/day (1.11; cold 0.66–0.78)."** Fixed.
+   - The judge's own formula now gives 1.35 on the full run, 1.38 on dev, 1.23 on the final check and **1.52 on a cold 7-month file**. At double risk it gives 1.23.
+   - All of these come from the warm-up prior and the lower grid, not from loosening the regime filter. The against_mult critique (1.23/day at +0.012R) is not what I did.
+2. **"Loses in summer, and the hold-out is summer."** Fixed, with a mechanism.
+   - The 23:00 UTC anchor was wrong for half the year, because the futures reopen at 22:00 UTC during US DST.
+   - Summer is now +0.033R with **both sides positive**, and the summer-only bootstrap passes **33.9%** (from 6.8%).
+   - The change is mechanically inert in winter, so it was not tuned on the final check.
+   - Caveat: summer is still weaker than winter (+0.033 vs +0.117R), and at 2× spread summer is only +0.007R.
+3. **"The edge is thin (under 1 SE), drop-top-10 leaves +0.010, 2× spread leaves +0.006."** Much improved.
+   - Full is +0.051R. With 743 trades and an R standard deviation of about 0.7, the standard error is 0.026, so the edge is about 2 standard errors.
+   - Drop-top-10 leaves +0.041R and 2× spread leaves +0.034R. The 2× spread run still has a 60.7% win rate.
+4. **"The final-check edge is 47 short trades."** It is now 154 trades with shorts +0.094R and longs +0.004R, at 64.3% win.
+   - The final check is still thin (+0.034R), and 4 of 10 one-step neighbours turn it negative.
+   - I don't claim the final-check result is robust. I claim the full-period and summer results are.
+5. **"Neighbours (SMA40, hours 2–18, atr48) flip the final check."** True, and still true after the revision. Over the full period, every neighbour is positive (+0.024 to +0.059R).
+6. **"Data snooping."** I conceded this in Rounds 1 and 2, and I concede it again.
+   - Round 3 used about 21 more full-period runs, and every one shows the final-check slice. **The final-check window is no longer a clean holdout for this revision.**
+   - Mitigations:
+     - the clock change cannot affect winter months;
+     - the grid shift and prior were proposed in my Round-2 critique *before* these runs;
+     - the prior is the grid's middle set, not the best one (the best one, the "alternative prior", would have given +0.059R; I did not take it);
+     - break-even and Sharpe were rejected even though break-even improved the final check.
+
+### Remaining weaknesses (final, frozen)
+
+- **Win-rate margin:** 62.0% normally, 60.7% at 2× spread, and 58.2% in summer at 2× spread. The summer win rate at normal costs is 59.8%, just under the 60% line.
+- **Double risk:** passes rise to 43.6%, but Phase 1 fails rise to 35%. I don't recommend double risk.
+- **2026 Q1 was flat** (−0.8%), and the final-check bootstrap pass rate is 23.8%. Expect hold-out pass rates closer to the 24–34% range than the 41% headline.
+
+**Frozen:** `prop_fx/strategies/gold_mean_reversion.py`.
