@@ -1,26 +1,31 @@
-"""gold_prop: the prop-firm specialist for XAUUSD.
+"""gold_prop (Round 3, final): the prop-firm specialist for XAUUSD.
 
 Thesis: a >=60% win rate that also passes FTMO comes from trade geometry and risk
-engineering placed on a modest, simple edge. Each piece is on purpose:
+engineering placed on a modest, simple edge.
 
-  edge      trade in the direction of the recent hourly trend (24h slope of an EMA)
-            at fixed session times. Time-series momentum (Moskowitz, Ooi & Pedersen
-            2012) is the documented, plain edge. Shorts are allowed and symmetric.
-  geometry  stop = stop_atr x ATR(24h), target = target_r x stop with target_r < 1.
-            The target/stop ratio buys the win rate; the walk-forward picks it.
-  calendar  entries only at three session fills (01 UTC Asia, 10 UTC London, 16 UTC
-            NY afternoon). Never in the high-impact US data window (12-15 UTC) or the
-            thin daily break. Every position is flattened 1h before the next session
-            ("session exit"), so the slot is free and the bot really trades ~2 a day.
-  regime    no new entries while ATR(24) > 1.5 x its 20-day median (volatility shock:
-            fat tails, gaps, and that's where the daily limit gets breached).
-  risk      1.5% a trade, max 1 position, max 2 trades a day, 3% daily stop. Two full
-            losses = 3%, which leaves a 2% buffer under FTMO's 5% daily limit.
-  learning  PropWalkForward re-picks the geometry (stop_atr x target_r, 16 sets) every
-            Monday from the trailing 12 weeks only, by a prop objective. Sets with win
-            rate >= 60% AND avg R > 0 rank first, then by total R + 2 x worst day.
-            Until 12 weeks of history exist it trades a fixed prior set
-            (2.0 ATR / 0.6R) instead of sitting flat.
+Round-3 revision (one revision, three related changes, see tournament_gold/gold_prop.md):
+  1. DST-aware session clocks. Decisions are taken at fixed LOCAL times in each centre
+     (10:00 Tokyo, 10:00 London, 11:00 New York), not at fixed UTC hours. The hold-out
+     (Apr-Oct 2026) is summer time, when fixed UTC hours land one hour off the sessions.
+  2. Direction = sign of gold's own trailing `mom_hours` move (gold_trend's session
+     momentum, which is the only direction signal in the field that beats its own
+     always-long control), instead of the EMA slope. Long and short are symmetric.
+  3. Break-even scratch exit (gold_trend): from `be_after` bars after entry, take the
+     first close that is >= `be_r` x stop in profit. This buys win rate without a
+     smaller target.
+
+Unchanged from Round 2:
+  geometry  stop = stop_atr x ATR(24h), target = target_r x stop (target_r < 1).
+  calendar  no entries in the New York data window (08:00-10:59 NY local) or the daily
+            break. Each position is flattened 1h before the next session, so the single
+            slot frees up and the bot really trades ~2 a day.
+  regime    no new entries while ATR(24) > 1.5 x its 20-day median (volatility shock).
+  risk      1.5% a trade, 1 position, max 2 trades a day, 3% daily stop. Two full
+            losses = 3%, a 2% buffer under FTMO's 5%.
+  learning  PropWalkForward re-picks the set every Monday from the trailing 12 weeks
+            only. Qualified sets (win >= 60% and avg R > 0) rank first, then total R +
+            2 x worst day. Until 12 weeks exist it trades a fixed prior set instead of
+            sitting flat, so a cold hold-out file trades from day one.
 
 Signals at the close of bar t fill at bar t+1's open; only data up to bar t is used.
 """
@@ -37,45 +42,66 @@ from .. import engine
 from ..adaptive import WalkForward, _Fixed, grid, score_trades
 from . import Strategy, atr
 
+# (time zone, local hour of the FILL bar)
+SESSIONS = (("Asia/Tokyo", 10), ("Europe/London", 10), ("America/New_York", 11))
+
+
+def _local_hour(idx: pd.DatetimeIndex, tz: str) -> np.ndarray:
+    return np.asarray(idx.tz_convert(tz).hour)
+
 
 @dataclass
-class GoldTrendSession(Strategy):
-    trend_len: int = 100            # hourly EMA span
-    entry_hours: tuple = (1, 10, 16)  # UTC hours of the FILL bar (Asia, London mid, NY pm)
+class GoldSessionMomentum(Strategy):
+    sessions: tuple = SESSIONS
+    dir_mode: str = "mom"           # "mom": sign of the trailing mom_hours move; "ema": R2 rule
+    mom_hours: int = 12
+    trend_len: int = 100            # EMA span, dir_mode="ema" only
     stop_atr: float = 2.0
-    target_r: float = 0.8
-    max_hold: int = 0               # bars; 0 = hold to stop/target/Friday close
-    sides: str = "both"             # "both" | "long" | "short"
-    skip_hours: tuple = (12, 13, 14, 15, 21, 22)
-    max_vol_ratio: float = 1.5      # skip entries if ATR(24) > this x its 20-day median; 0 = off
-    session_exit: bool = True       # flatten 1h before each entry session (frees the slot)
+    target_r: float = 0.6
+    be_after: int = 1               # 0 = no break-even exit
+    be_r: float = 0.1
+    session_exit: bool = True
+    ny_skip: tuple = (8, 9, 10, 17)  # NY-local FILL hours with no new entries (data, break)
+    max_vol_ratio: float = 1.5
 
     def prepare(self, df: pd.DataFrame, pair: str) -> pd.DataFrame:
         out = df.copy()
         c = df["close"]
         a = atr(df, 24)
-        ema = c.ewm(span=self.trend_len, adjust=False, min_periods=self.trend_len).mean()
-        direction = np.sign(ema - ema.shift(24)).fillna(0).to_numpy()
-        if self.sides == "long":
-            direction = np.where(direction > 0, direction, 0)
-        elif self.sides == "short":
-            direction = np.where(direction < 0, direction, 0)
-        fill_hour = (df.index + pd.Timedelta("1h")).hour
-        when = np.isin(fill_hour, self.entry_hours) & ~np.isin(fill_hour, self.skip_hours)
+        if self.dir_mode == "mom":
+            direction = np.sign(c - c.shift(self.mom_hours)).fillna(0).to_numpy()
+        else:
+            ema = c.ewm(span=self.trend_len, adjust=False, min_periods=self.trend_len).mean()
+            direction = np.sign(ema - ema.shift(24)).fillna(0).to_numpy()
+        fill = df.index + pd.Timedelta("1h")
+        when = np.zeros(len(df), dtype=bool)
+        pre = np.zeros(len(df), dtype=bool)
+        for tz, h in self.sessions:
+            lh = _local_hour(fill, tz)
+            when |= lh == h
+            pre |= lh == (h - 1) % 24  # exit fills 1h before this session's fill
+        when &= ~np.isin(_local_hour(fill, "America/New_York"), self.ny_skip)
+        when &= np.asarray(fill.weekday) < 5
         if self.max_vol_ratio:
             calm = (a / a.rolling(24 * 20, min_periods=24 * 5).median()) <= self.max_vol_ratio
             when &= calm.to_numpy()
         entry = np.where(when, direction, 0).astype(int)
         out["entry"] = entry
-        if self.max_hold:
-            sig = pd.Series(entry != 0, index=df.index)
-            out["exit"] = sig.shift(self.max_hold, fill_value=False).to_numpy() & (entry == 0)
-        else:
-            out["exit"] = False
-        if self.session_exit:
-            # exit flag on bar t closes at bar t+1's open = 1 hour before the next session fill
-            pre = np.isin(fill_hour, [(h - 1) % 24 for h in self.entry_hours])
-            out["exit"] = np.asarray(out["exit"], dtype=bool) | pre
+        ex = pre.copy() if self.session_exit else np.zeros(len(df), dtype=bool)
+        if self.be_after:
+            # Break-even scratch for the latest signal. Its fill is the next bar's open,
+            # which is known from bar si+1 on; the rule only looks at bars >= si+be_after.
+            pos = np.arange(len(df))
+            last = pd.Series(np.where(entry != 0, pos, np.nan)).ffill().to_numpy()
+            ok = ~np.isnan(last)
+            si = np.where(ok, last, 0).astype(int)
+            age = pos - si
+            fill_px = df["open"].shift(-1).to_numpy()[si]
+            side = entry[si]
+            stop0 = (self.stop_atr * a).to_numpy()[si]
+            gain = side * (c.to_numpy() - fill_px)
+            ex |= ok & (age >= self.be_after) & (gain >= self.be_r * stop0)
+        out["exit"] = ex & (entry == 0)
         out["stop_dist"] = self.stop_atr * a
         out["target_dist"] = self.target_r * self.stop_atr * a
         out["score"] = 1.0
@@ -155,13 +181,16 @@ class PropWalkForward(WalkForward):
         return out
 
 
-# risk 1.5% a trade, 2 trades a day max, so two full losses = 3% and the 3% daily stop
-# leaves a 2% buffer under FTMO's 5% daily limit for gaps and slippage.
-BASE = GoldTrendSession(name="gold_prop_base", risk_pct=1.5, max_positions=1,
-                        max_trades_per_day=2, daily_stop_pct=3.0, pairs=("XAUUSD",))
+# Risk: 1.5% a trade, at most 2 trades a day and 1 position, so two full losses = 3% and
+# the 3% daily stop leaves a 2% buffer under FTMO's 5% daily limit for gaps and slippage.
+# At double risk (3% a trade), keep daily_stop_pct at 3.0: the first full loss then
+# halts the day (see the .md for the residual partial-loss case).
+BASE = GoldSessionMomentum(name="gold_prop_base", risk_pct=1.5, max_positions=1,
+                           max_trades_per_day=2, daily_stop_pct=3.0, pairs=("XAUUSD",))
 
-CANDIDATES = grid(stop_atr=[1.5, 2.0, 2.5, 3.0], target_r=[0.4, 0.5, 0.6, 0.7])  # 16 sets
-PRIOR = CANDIDATES.index({"stop_atr": 2.0, "target_r": 0.6})  # traded until it has 12 weeks
+CANDIDATES = grid(mom_hours=[12, 24], stop_atr=[1.5, 2.0, 2.5], target_r=[0.5, 0.6, 0.7],
+                  be_after=[1, 2])  # 36 sets
+PRIOR = CANDIDATES.index({"mom_hours": 12, "stop_atr": 2.0, "target_r": 0.6, "be_after": 1})
 
 STRATEGY = PropWalkForward(name="gold_prop", base=BASE, candidates=CANDIDATES,
                            train_weeks=12, refit_weeks=1, objective="prop",

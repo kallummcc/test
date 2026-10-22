@@ -107,7 +107,7 @@ class GoldMR(Strategy):
         out["target_dist"] = self.target_atr * a
         ts = pd.Series(df.index, index=df.index)
         since = (ts - ts.where(entry != 0).ffill()).dt.total_seconds() / 3600
-        ex = (since >= self.max_hold_h).fillna(False).to_numpy()
+        ex = np.array((since >= self.max_hold_h).fillna(False).to_numpy(), dtype=bool)
         if self.be_after > 0:
             # Bank a small profit (gold_trend's break-even idea): measured from the fill of the
             # latest signal (next bar's open), known once that bar exists; executed next open.
