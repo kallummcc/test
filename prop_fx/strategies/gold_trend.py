@@ -18,7 +18,7 @@ hours after the latest entry signal; flat by `flat_hour` UTC; trend flip.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 import pandas as pd
@@ -148,6 +148,36 @@ class GoldTrend(Strategy):
         out["stop_dist"] = self.stop_atr * a
         out["target_dist"] = self.target_r * self.stop_atr * a
         out["score"] = 1.0
+        return out
+
+
+@dataclass
+class PriorWalkForward(WalkForward):
+    """WalkForward that trades a fixed `prior` candidate (instead of sitting flat) while it
+    has fewer than `train_weeks` of history, or when no candidate has enough trades in the
+    window. Same refit mechanics as prop_fx.adaptive.WalkForward (idea from gold_prop)."""
+
+    prior: dict | None = None
+
+    def prepare(self, df: pd.DataFrame, pair: str) -> pd.DataFrame:
+        out = super().prepare(df, pair)
+        if self.prior is None:
+            return out
+        flat = (out["param_set"] == -1).to_numpy()
+        if not flat.any():
+            return out
+        pf = replace(self.base, **self.prior).prepare(df, pair)
+        utc = df.index.tz_convert("UTC")
+        monday = (utc - pd.to_timedelta(utc.weekday, "D")).normalize()
+        # switch only at a week boundary: rows of weeks that had no learned set at all
+        learned_weeks = set(monday[~flat])
+        rows = np.array([m not in learned_weeks for m in monday])
+        for col in ("entry", "exit", "stop_dist", "target_dist", "score"):
+            out.loc[rows, col] = pf.loc[rows, col].to_numpy()
+        out.loc[rows, "param_set"] = -2  # -2 = prior
+        if self.keep_log:
+            for m in sorted(set(monday[rows])):
+                self.log.append({"pair": pair, "from": str(m), "params": self.prior, "train_score": None})
         return out
 
 

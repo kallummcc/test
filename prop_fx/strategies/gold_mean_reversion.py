@@ -14,7 +14,7 @@ See tournament_gold/gold_mean_reversion.md for research, learning cycles and res
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 
 import numpy as np
 import pandas as pd
@@ -55,15 +55,26 @@ class GoldMR(Strategy):
     max_hold_h: int = 4
     hours: tuple[int, int] = (1, 19)  # UTC bar-open hours allowed to signal
     refire: bool = False  # True: every qualifying bar may enter (not only the first of a run)
-    daily_align: int = 0
-    against_mult: float = float("inf")  # >0: also require close vs SMA(daily_align) of daily closes to agree
+    daily_align: int = 0  # >0: daily regime = last closed daily close vs SMA(daily_align)
+    against_mult: float = float("inf")  # trades against that regime need against_mult x trend_thr
+    clock: str = "utc"  # "utc": session opens 23:00 UTC, hours in UTC; "ny": CME clock (DST-aware)
+    be_after: int = 0  # >0: from this many bars after the latest signal, exit on a close >= be_r x stop
+    be_r: float = 0.1
 
     def prepare(self, df: pd.DataFrame, pair: str) -> pd.DataFrame:
         out = df.copy()
         c = df["close"]
         a = atr(df, self.atr_len)
-        session = (df.index + pd.Timedelta(hours=1)).normalize()  # 23:00 UTC -> next day
-        s_open = df["open"].groupby(session).transform("first")
+        if self.clock == "ny":
+            # CME Globex gold reopens at 18:00 New York time (22:00 UTC in summer, 23:00 in
+            # winter); the session is keyed on New York time + 6h so it starts at that reopen.
+            ny = df.index.tz_convert("America/New_York")
+            session = (ny + pd.Timedelta(hours=6)).normalize()
+            hour = pd.Index(((ny.hour + 5) % 24))  # NY hour expressed on the winter-UTC scale
+        else:
+            session = (df.index + pd.Timedelta(hours=1)).normalize()  # 23:00 UTC -> next day
+            hour = df.index.hour
+        s_open = df["open"].groupby(np.asarray(session)).transform("first")
         st = (c - s_open) / a
         if self.pull_mode == "bars":
             down = pd.Series(True, index=df.index)
@@ -77,7 +88,6 @@ class GoldMR(Strategy):
             loss = (-d).clip(lower=0).ewm(alpha=0.5, adjust=False).mean()
             r2 = 100 - 100 / (1 + gain / loss)
             down, up = r2 < self.rsi_lvl, r2 > 100 - self.rsi_lvl
-        hour = df.index.hour
         ok = (hour >= self.hours[0]) & (hour <= self.hours[1])
         long_sig = ok & (st > self.trend_thr) & down
         short_sig = ok & (st < -self.trend_thr) & up
@@ -97,8 +107,42 @@ class GoldMR(Strategy):
         out["target_dist"] = self.target_atr * a
         ts = pd.Series(df.index, index=df.index)
         since = (ts - ts.where(entry != 0).ffill()).dt.total_seconds() / 3600
-        out["exit"] = (since >= self.max_hold_h).fillna(False).to_numpy()
+        ex = (since >= self.max_hold_h).fillna(False).to_numpy()
+        if self.be_after > 0:
+            # Bank a small profit (gold_trend's break-even idea): measured from the fill of the
+            # latest signal (next bar's open), known once that bar exists; executed next open.
+            pos = np.arange(len(df))
+            si = pd.Series(np.where(entry != 0, pos, np.nan)).ffill().to_numpy()
+            ok_i = ~np.isnan(si)
+            sii = np.where(ok_i, si, 0).astype(int)
+            fill = df["open"].shift(-1).to_numpy()[sii]
+            side_i = entry.to_numpy()[sii]
+            age = pos - sii
+            gain = side_i * (c.to_numpy() - fill)
+            ex |= ok_i & (age >= self.be_after) & (gain >= self.be_r * (self.stop_atr * a).to_numpy()[sii])
+        out["exit"] = ex
         out["score"] = st.abs()
+        return out
+
+
+@dataclass
+class PriorWalkForward(WalkForward):
+    """WalkForward that trades a fixed `prior` parameter set whenever the stock learner
+    would sit flat: the first `train_weeks` of any data set (cold start) and weeks where no
+    candidate has `min_trades` in the trailing window. Idea borrowed from gold_prop. Every
+    learned week is exactly the stock WalkForward choice."""
+
+    prior: dict = field(default_factory=dict)
+
+    def prepare(self, df: pd.DataFrame, pair: str) -> pd.DataFrame:
+        out = super().prepare(df, pair)
+        if not self.prior:
+            return out
+        flat = (out["param_set"] == -1).to_numpy()
+        if flat.any():
+            frame = replace(self.base, **self.prior).prepare(df, pair)
+            for col in ("entry", "exit", "stop_dist", "target_dist", "score"):
+                out.loc[flat, col] = frame.loc[flat, col].to_numpy()
         return out
 
 
