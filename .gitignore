@@ -6,3 +6,4 @@ agent_state.json
 trades.jsonl
 data/
 backtest_results/
+tournament/runs/
