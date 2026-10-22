@@ -8,3 +8,4 @@ data/
 backtest_results/
 tournament/runs/
 tournament_fx/runs/
+tournament_gold/runs/

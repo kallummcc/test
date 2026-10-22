@@ -69,7 +69,8 @@ class WalkForward(Strategy):
     def __post_init__(self):
         if self.base is not None:
             # Account-level settings come from the base strategy.
-            for attr in ("interval", "risk_pct", "max_positions", "daily_stop_pct", "pairs"):
+            for attr in ("interval", "risk_pct", "max_positions", "daily_stop_pct",
+                         "max_trades_per_day", "pairs"):
                 setattr(self, attr, getattr(self.base, attr))
         self.log: list[dict] = []
 
@@ -130,7 +131,7 @@ class _Fixed(Strategy):
     def __init__(self, frame, src):
         super().__init__(name=f"{src.name}-fixed", interval=src.interval, risk_pct=src.risk_pct,
                          max_positions=src.max_positions, daily_stop_pct=src.daily_stop_pct,
-                         pairs=src.pairs)
+                         max_trades_per_day=src.max_trades_per_day, pairs=src.pairs)
         self.frame = frame
 
     def prepare(self, df, pair):

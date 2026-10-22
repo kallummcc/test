@@ -152,11 +152,11 @@ class MT5Trader:
                       comment=getattr(result, "comment", None))
         return ok
 
-    def open(self, pair: str, side: int, stop_dist: float, target_dist: float) -> None:
+    def open(self, pair: str, side: int, stop_dist: float, target_dist: float) -> bool:
         lots = self.lots_for(pair, stop_dist)
         if lots <= 0:
             self._journal("skip_size_zero", pair=pair)
-            return
+            return False
         tick = self.mt5.symbol_info_tick(self.sym(pair))
         price = tick.ask if side > 0 else tick.bid
         digits = self.mt5.symbol_info(self.sym(pair)).digits
@@ -175,7 +175,7 @@ class MT5Trader:
             "type_time": self.mt5.ORDER_TIME_GTC,
             "type_filling": self._filling(pair),
         }
-        self._send(req)
+        return self._send(req)
 
     def close(self, position, reason: str) -> None:
         pair = position.symbol[:6]
@@ -208,7 +208,7 @@ class MT5Trader:
         now = self.now()
         day = now.astimezone(PRAGUE).date().isoformat()
         if self.state["day"] != day:
-            self.state.update(day=day, day_start_balance=acct.balance)
+            self.state.update(day=day, day_start_balance=acct.balance, opened_today=0)
             self._journal("new_day", balance=acct.balance, equity=acct.equity)
         b0 = self.cfg.initial_balance
         if self.state["halted_for_good"]:
@@ -270,8 +270,11 @@ class MT5Trader:
                 score = row["score"] if pd.notna(row["score"]) else -math.inf
                 decisions.append((score, pair, side, row["stop_dist"], row["target_dist"]))
         slots = self.strategy.max_positions - len(self.my_positions())
+        if self.strategy.max_trades_per_day:
+            slots = min(slots, self.strategy.max_trades_per_day - self.state.get("opened_today", 0))
         for _, pair, side, sd, td in sorted(decisions, reverse=True)[: max(slots, 0)]:
-            self.open(pair, side, float(sd), float(td))
+            if self.open(pair, side, float(sd), float(td)):
+                self.state["opened_today"] = self.state.get("opened_today", 0) + 1
         self._save()
 
     def run(self, poll_seconds: int = 20) -> None:

@@ -113,7 +113,8 @@ def test_ftmo_pass_and_fail_rules():
 
 
 def test_bundled_strategies_load_and_run():
-    bars = {"EURUSD": fx_bars(weeks=3, seed=1), "USDJPY": fx_bars(weeks=3, seed=2, price=150)}
+    bars = {"EURUSD": fx_bars(weeks=3, seed=1), "USDJPY": fx_bars(weeks=3, seed=2, price=150),
+            "XAUUSD": fx_bars(weeks=3, seed=5, price=3000)}
     for name in available():
         res = engine.run(load(name), bars)
         summary = ftmo.evaluate(res, n_boot=20)
@@ -168,3 +169,20 @@ def test_walk_forward_learns_from_the_past_only():
                         min_trades=3).prepare(df[df.index <= cut], "EURUSD")
     common = early.index
     pd.testing.assert_series_equal(early["entry"], out.loc[common, "entry"])
+
+
+def test_max_trades_per_day_cap():
+    df = fx_bars(weeks=2, seed=4)
+
+    @dataclass
+    class EveryBar(AlwaysLong):
+        def prepare(self, df, pair):
+            out = super().prepare(df, pair)
+            out["exit"] = True  # flat after each bar, so it wants a new trade every hour
+            return out
+
+    res = engine.run(EveryBar(name="t", stop=0.01, max_positions=1, max_trades_per_day=2),
+                     {"EURUSD": df})
+    per_day = pd.Series(1, index=[pd.Timestamp(t.entry_time).tz_convert("Europe/Prague").date()
+                                  for t in res.trades]).groupby(level=0).sum()
+    assert per_day.max() == 2

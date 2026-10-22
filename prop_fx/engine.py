@@ -120,6 +120,7 @@ def run(strategy: Strategy, bars: dict[str, pd.DataFrame], cfg: EngineConfig | N
     risk_usd = strategy.risk_pct / 100 * cfg.initial_balance
     day_keys = timeline.tz_convert(DAY_TZ).normalize()
     day_start_cum = 0.0
+    opened_today = 0
     halted_day = None
 
     def prices():
@@ -148,6 +149,7 @@ def run(strategy: Strategy, bars: dict[str, pd.DataFrame], cfg: EngineConfig | N
             pending.clear()
         if i == 0 or day_keys[i] != day_keys[i - 1]:
             day_start_cum = cum
+            opened_today = 0
 
         # 1) fills at the open
         for j, order in list(pending.items()):
@@ -166,6 +168,8 @@ def run(strategy: Strategy, bars: dict[str, pd.DataFrame], cfg: EngineConfig | N
                 close(j, o - positions[j].side * half[j], ts, "reverse")
             if len(positions) >= strategy.max_positions:
                 continue
+            if strategy.max_trades_per_day and opened_today >= strategy.max_trades_per_day:
+                continue
             entry = o + side * half[j]
             px = prices()
             pv = pip_value_usd(specs[j], px)
@@ -183,6 +187,7 @@ def run(strategy: Strategy, bars: dict[str, pd.DataFrame], cfg: EngineConfig | N
             positions[j] = _Pos(side, lots, entry, entry - side * sdist, target,
                                 stop_pips * pv * lots, ts)
             opened[i] += 1
+            opened_today += 1
 
         # 2) intrabar stops / targets (bid for longs, ask for shorts)
         for j, pos in list(positions.items()):
@@ -236,7 +241,8 @@ def run(strategy: Strategy, bars: dict[str, pd.DataFrame], cfg: EngineConfig | N
         for j, pos in positions.items():
             if EXIT[i, j] == 1 and j not in pending:
                 pending[j] = ("close", "strategy exit")
-        if no_new:
+        if no_new or (strategy.max_trades_per_day
+                      and opened_today >= strategy.max_trades_per_day):
             continue
         cands = [j for j in range(len(pairs))
                  if ENTRY[i, j] != 0 and not math.isnan(C[i, j]) and SD[i, j] > 0

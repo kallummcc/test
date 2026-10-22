@@ -31,13 +31,15 @@ class Strategy:
     risk_pct: float = 0.5  # % of the INITIAL challenge balance risked per trade (0.1-2.0)
     max_positions: int = 3  # max simultaneous positions across all pairs (1-8)
     daily_stop_pct: float | None = None  # stop trading for the day after this loss (% of initial)
+    max_trades_per_day: int | None = None  # cap on new positions per day (Prague day)
     pairs: tuple[str, ...] | None = None  # None = every pair in the data set
 
     def prepare(self, df: pd.DataFrame, pair: str) -> pd.DataFrame:  # pragma: no cover
         raise NotImplementedError
 
 
-LIMITS = {"risk_pct": (0.1, 2.0), "max_positions": (1, 8), "daily_stop_pct": (0.5, 4.5)}
+LIMITS = {"risk_pct": (0.1, 2.0), "max_positions": (1, 8), "daily_stop_pct": (0.5, 4.5),
+          "max_trades_per_day": (1, 20)}
 
 
 def validated(strategy: Strategy) -> Strategy:
