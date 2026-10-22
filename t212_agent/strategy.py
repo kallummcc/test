@@ -51,7 +51,22 @@ def add_indicators(df: pd.DataFrame, fast: int, slow: int, atr_period: int) -> p
     day = df.index.date
     pv = (typical * df["volume"]).groupby(day).cumsum()
     vol = df["volume"].groupby(day).cumsum()
-    df["vwap"] = pv / vol.replace(0, pd.NA)
+    df["vwap"] = pv / vol.where(vol > 0)
+    return df
+
+
+def add_signals(df: pd.DataFrame, fast: int, slow: int, atr_period: int) -> pd.DataFrame:
+    """Indicators plus per-bar entry/exit flags (vectorised, used by the backtester)."""
+    df = add_indicators(df, fast, slow, atr_period)
+    above = df["ema_fast"] > df["ema_slow"]
+    below = df["ema_fast"] < df["ema_slow"]
+    prev_fast, prev_slow = df["ema_fast"].shift(1), df["ema_slow"].shift(1)
+    df["cross_up"] = above & (prev_fast <= prev_slow)
+    df["cross_down"] = below & (prev_fast >= prev_slow)
+    df["above_vwap"] = df["close"] > df["vwap"]
+    df["below_vwap"] = df["close"] < df["vwap"]
+    df["entry"] = df["cross_up"] & df["above_vwap"] & df["atr"].notna()
+    df.loc[df.index[: max(slow, atr_period) + 1], "entry"] = False
     return df
 
 
@@ -65,19 +80,13 @@ def evaluate(
     if len(df) < max(slow, atr_period) + 2:
         return Signal(Action.HOLD, float("nan"), float("nan"), "not enough bars")
 
-    df = add_indicators(df, fast, slow, atr_period)
-    last, prev = df.iloc[-1], df.iloc[-2]
+    last = add_signals(df, fast, slow, atr_period).iloc[-1]
     price, atr = float(last["close"]), float(last["atr"])
-    vwap = last["vwap"]
 
-    crossed_up = prev["ema_fast"] <= prev["ema_slow"] and last["ema_fast"] > last["ema_slow"]
-    crossed_down = prev["ema_fast"] >= prev["ema_slow"] and last["ema_fast"] < last["ema_slow"]
-    above_vwap = pd.notna(vwap) and price > float(vwap)
-
-    if not in_position and crossed_up and above_vwap:
+    if not in_position and last["entry"]:
         return Signal(Action.BUY, price, atr, "EMA bull cross above VWAP")
-    if in_position and crossed_down:
+    if in_position and last["cross_down"]:
         return Signal(Action.SELL, price, atr, "EMA bear cross")
-    if in_position and pd.notna(vwap) and price < float(vwap):
+    if in_position and last["below_vwap"]:
         return Signal(Action.SELL, price, atr, "lost VWAP")
     return Signal(Action.HOLD, price, atr, "no signal")

@@ -79,6 +79,38 @@ To trade UK shares, use LSE tickers and London hours, for example
 `SESSION_CLOSE=16:30`. You can look up exact T212 tickers through the
 `/equity/metadata/instruments` endpoint.
 
+## Backtesting
+
+`t212_agent/backtest.py` replays the same strategy, position sizing and session
+rules over historical 5-minute bars:
+
+```bash
+# Alpaca has free, split-adjusted 5-min US data back to 2016.
+# Get keys at alpaca.markets (a free paper account is enough) and add them to .env.
+python -m t212_agent.backtest --source alpaca --start 2020-01-01 --balance 1000
+```
+
+It prints a summary (final balance, CAGR, max drawdown, Sharpe, win rate,
+profit factor, and equal-weight buy & hold of the same stocks) and a year-by-year
+table. The equity curve and every trade go to `backtest_results/`. Downloaded
+bars are cached in `data/`. Add `--refresh` to download them again.
+
+Other options:
+
+- **Your own data:** `--source csv`, reading `data/<SYMBOL>_5m.csv` files with
+  columns `timestamp,open,high,low,close,volume`.
+- **Quick check:** `--source yahoo`. Yahoo only has the last ~60 days of
+  intraday bars.
+- **Costs:** `--fx-fee-pct 0.15` is the default and models Trading 212's FX fee
+  on US shares for a GBP account. Use `0` if your account is in USD.
+  `--slippage-bps 2` is charged on every fill.
+
+How trades are simulated: a signal on a bar fills at the next bar's open. Stops
+and targets are checked against each bar's high and low; a gap through a level
+fills at the open, and if one bar touches both, the stop counts. The backtest
+ignores FX rate moves, so the balance is treated as if it were in the stocks'
+currency.
+
 ## Known limitations
 
 - **Delayed data.** Yahoo intraday data can lag by a few minutes, and Yahoo is

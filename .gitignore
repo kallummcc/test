@@ -4,3 +4,5 @@ __pycache__/
 .pytest_cache/
 agent_state.json
 trades.jsonl
+data/
+backtest_results/
