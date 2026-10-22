@@ -43,7 +43,7 @@ class GoldTrendSession(Strategy):
     sides: str = "both"             # "both" | "long" | "short"
     skip_hours: tuple = (12, 13, 14, 15, 21, 22)
     max_vol_ratio: float = 1.5      # skip entries if ATR(24) > this x its 20-day median; 0 = off
-    session_exit: bool = False      # flatten 1h before each entry session (frees the slot)
+    session_exit: bool = True       # flatten 1h before each entry session (frees the slot)
 
     def prepare(self, df: pd.DataFrame, pair: str) -> pd.DataFrame:
         out = df.copy()
@@ -155,8 +155,9 @@ class PropWalkForward(WalkForward):
 BASE = GoldTrendSession(name="gold_prop_base", risk_pct=1.5, max_positions=1,
                         max_trades_per_day=2, daily_stop_pct=3.0, pairs=("XAUUSD",))
 
-CANDIDATES = grid(stop_atr=[1.5, 2.0, 2.5, 3.0], target_r=[0.5, 0.6, 0.7, 0.8])
+CANDIDATES = grid(stop_atr=[1.5, 2.0, 2.5, 3.0], target_r=[0.4, 0.5, 0.6, 0.7])  # 16 sets
+PRIOR = CANDIDATES.index({"stop_atr": 2.0, "target_r": 0.6})  # traded until it has 12 weeks
 
 STRATEGY = PropWalkForward(name="gold_prop", base=BASE, candidates=CANDIDATES,
-                           train_weeks=12, refit_weeks=1, objective="pass_score",
-                           min_trades=10)
+                           train_weeks=12, refit_weeks=1, objective="prop",
+                           min_trades=10, min_win=0.60, prior=PRIOR)
