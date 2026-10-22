@@ -53,7 +53,7 @@ def _same_slot_mean(values: pd.Series, day: pd.Index, slot: np.ndarray, window: 
 class Momentum(Strategy):
     lookback: int = 14        # sessions in the noise-area average (Beat the Market: 14)
     rvol_lookback: int = 20   # sessions in the relative-volume baseline
-    rvol_min: float = 2.0     # "in play": first-hour volume >= 2x normal
+    rvol_min: float = 3.0     # "in play": first-hour volume >= 3x normal
     z_min: float = 2.0        # first-hour move >= 2 noise-sigmas above the open
     signal_slot: int = 0      # bar slot that may signal (0 = first hourly bar)
     atr_period: int = 14

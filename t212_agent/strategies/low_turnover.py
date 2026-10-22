@@ -41,7 +41,7 @@ class LowTurnover(Strategy):
     overrides: dict = field(default_factory=lambda: {
         "max_open_positions": 1,
         "max_trades_per_day": 1,
-        "risk_per_trade_pct": 1.0,
+        "risk_per_trade_pct": 2.0,
         "max_position_pct": 50.0,
     })
 

@@ -12,9 +12,9 @@ range. We go long only when
     range (ATR%, prior sessions only),
 
 then hold to the close (the engine flattens). One entry per symbol per day,
-which keeps turnover low against the ~0.34% round trip. The stop sits below
-the first-hour low (the bottom of the opening channel), capped at
-`max_stop_atr` daily ATRs.
+which keeps turnover low against the ~0.34% round trip. The stop is a wide
+catastrophe stop of `max_stop_atr` daily ATRs (tighter stops at the first-hour
+low were tested and cut too many winners on hourly bars).
 
 No look-ahead: daily statistics use only completed prior sessions (.shift()),
 and the first-hour features are known at the 09:30 bar's close; the engine
@@ -23,7 +23,7 @@ fills at the 10:30 open.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
@@ -34,12 +34,12 @@ from . import Strategy
 @dataclass
 class Trend1h(Strategy):
     rv_lookback: int = 20       # sessions for the first-hour volume norm
-    rv_min: float = 2.0         # first-hour volume / its prior-sessions mean
+    rv_min: float = 3.0         # first-hour volume / its prior-sessions mean
     atr_days: int = 14          # daily range lookback (prior sessions)
     min_move_atr: float = 0.5   # first-hour open->close move, in daily-ATR units
-    max_stop_atr: float = 1.0   # stop distance cap, in daily-ATR units (price)
-    stop_at_fh_low: bool = True  # False: stop = max_stop_atr x daily ATR (catastrophe stop)
-    late_breakout: bool = False  # also enter on a later close above the first-hour high
+    max_stop_atr: float = 3.0   # stop distance (cap), in daily-ATR units (price)
+    stop_at_fh_low: bool = False  # False: stop = max_stop_atr x daily ATR (catastrophe stop)
+    late_breakout: bool = False  # enter only on a later hourly close above the first-hour high
     vwap_exit: bool = False     # exit on an hourly close below session VWAP
 
     def prepare(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -111,5 +111,6 @@ STRATEGY = Trend1h(
         "risk_per_trade_pct": 1.0,
         "max_position_pct": 33.0,
         "max_open_positions": 3,
+        "max_daily_loss_pct": 5.0,  # a 2% halt fires on noise when ~3 positions are open
     },
 )
