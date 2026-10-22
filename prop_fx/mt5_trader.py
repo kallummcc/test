@@ -11,6 +11,8 @@ Requires Windows (or Wine) with the MT5 terminal installed and logged in, plus
     PHASE_TARGET_PCT=10                   10 for phase 1, 5 for phase 2, 0 when funded
     DAILY_GUARD_PCT=4.0                   flatten + halt for the day at this daily loss
     MAX_GUARD_PCT=9.0                     flatten + halt for good at this total loss
+    DAILY_RISK_BUDGET_PCT=4.5             skip a trade if today's loss + open risk + its risk
+                                          would exceed this (a 2nd loser can't breach 5%)
     FX_RISK_MULT=1                        scale the strategy's risk per trade (2 = double)
     DRY_RUN=true                          log orders instead of sending them
 
@@ -56,6 +58,7 @@ class TraderConfig:
     phase_target_pct: float = 10.0
     daily_guard_pct: float = 4.0
     max_guard_pct: float = 9.0
+    daily_risk_budget_pct: float = 4.5
     dry_run: bool = True
     risk_mult: float = 1.0
     bars: int = 3000  # hourly history fed to the strategy (walk-forward needs ~12+ weeks)
@@ -72,6 +75,7 @@ class TraderConfig:
             phase_target_pct=float(env("PHASE_TARGET_PCT", cls.phase_target_pct)),
             daily_guard_pct=float(env("DAILY_GUARD_PCT", cls.daily_guard_pct)),
             max_guard_pct=float(env("MAX_GUARD_PCT", cls.max_guard_pct)),
+            daily_risk_budget_pct=float(env("DAILY_RISK_BUDGET_PCT", cls.daily_risk_budget_pct)),
             dry_run=env("DRY_RUN", "true").lower() in {"1", "true", "yes"},
             risk_mult=float(env("FX_RISK_MULT", "1")),
         )
@@ -160,6 +164,14 @@ class MT5Trader:
         lots = self.lots_for(pair, stop_dist)
         if lots <= 0:
             self._journal("skip_size_zero", pair=pair)
+            return False
+        b0 = self.cfg.initial_balance
+        acct = self.mt5.account_info()
+        day_loss = max((self.state.get("day_start_balance") or acct.balance) - acct.equity, 0.0)
+        open_risk = len(self.my_positions()) * self.strategy.risk_pct / 100 * b0
+        if day_loss + open_risk + self.strategy.risk_pct / 100 * b0 > \
+                self.cfg.daily_risk_budget_pct / 100 * b0:
+            self._journal("skip_risk_budget", pair=pair, day_loss=day_loss, open_risk=open_risk)
             return False
         tick = self.mt5.symbol_info_tick(self.sym(pair))
         price = tick.ask if side > 0 else tick.bid

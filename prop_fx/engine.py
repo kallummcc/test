@@ -41,6 +41,9 @@ class EngineConfig:
     leverage: float = 100.0
     spread_mult: float = 1.0  # scale every pair's spread (stress test)
     slippage_pips: float = 0.1  # extra adverse slippage on market fills and stops
+    # Skip a new trade if today's realised loss + open risk + its own risk would exceed
+    # this % of the initial balance (keeps a 2nd loser from breaching FTMO's 5%). None = off.
+    daily_risk_budget_pct: float | None = None
 
 
 @dataclass
@@ -172,6 +175,10 @@ def run(strategy: Strategy, bars: dict[str, pd.DataFrame], cfg: EngineConfig | N
                 continue
             if strategy.max_trades_per_day and opened_today >= strategy.max_trades_per_day:
                 continue
+            if cfg.daily_risk_budget_pct is not None:
+                at_risk = max(day_start_cum - cum, 0.0) + sum(p.risk_usd for p in positions.values())
+                if at_risk + risk_usd > cfg.daily_risk_budget_pct / 100 * cfg.initial_balance:
+                    continue
             entry = o + side * half[j]
             px = prices()
             pv = pip_value_usd(specs[j], px)

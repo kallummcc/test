@@ -152,3 +152,11 @@ def test_risk_multiplier_doubles_lots():
     trader, mt5, _ = make(risk_mult=2.0)
     trader.on_bar()
     assert mt5.sent[0]["volume"] == pytest.approx(5.0)  # 2 x 2.5 lots
+
+
+def test_daily_risk_budget_blocks_trade_that_could_breach():
+    trader, mt5, _ = make(risk_mult=6.0)  # 3% risk per trade
+    trader.guard()  # day start balance 100k
+    mt5.equity = 98_000.0  # already -2% today: -2% + 3% > 4.5% budget
+    trader.on_bar()
+    assert mt5.sent == []

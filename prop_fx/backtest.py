@@ -88,6 +88,8 @@ def main(argv=None) -> dict:
     p.add_argument("--spread-mult", type=float, default=1.0)
     p.add_argument("--slippage-pips", type=float, default=0.1)
     p.add_argument("--boot", type=int, default=2000, help="bootstrap challenges")
+    p.add_argument("--risk-budget", type=float, default=None,
+                   help="daily risk budget %% (skip trades that could push the day past it)")
     p.add_argument("--risk-mult", type=float, default=1.0,
                    help="scale the strategy's risk per trade (e.g. 2 = double risk)")
     p.add_argument("--out", default=None, help="directory for trades.csv")
@@ -97,7 +99,8 @@ def main(argv=None) -> dict:
     strat = strategies.scale_risk(strategies.load(args.strategy), args.risk_mult)
     bars = load_dir(args.data_dir, strat.interval, strat.pairs, args.start, args.end)
     cfg = engine.EngineConfig(args.balance, args.commission, spread_mult=args.spread_mult,
-                              slippage_pips=args.slippage_pips)
+                              slippage_pips=args.slippage_pips,
+                              daily_risk_budget_pct=args.risk_budget)
     trade_from = pd.Timestamp(args.trade_from, tz="UTC") if args.trade_from else None
     res = engine.run(strat, bars, cfg, trade_from)
     if trade_from is not None:

@@ -213,3 +213,15 @@ def test_scale_risk_doubles_position_size_and_walk_forward_base():
     wf2 = scale_risk(wf, 2)
     assert wf2.risk_pct == 3.0 and wf2.base.risk_pct == 3.0
     assert scale_risk(AlwaysLong(name="t", risk_pct=2.0), 3).risk_pct == 5.0  # capped
+
+
+def test_daily_risk_budget_skips_second_loser():
+    df = fx_bars(weeks=1, drift=-0.0005, vol=0.0001)
+    s = AlwaysLong(name="t", risk_pct=3.0, max_positions=1, max_trades_per_day=2)
+    plain = engine.run(s, {"EURUSD": df})
+    capped = engine.run(s, {"EURUSD": df}, engine.EngineConfig(daily_risk_budget_pct=4.5))
+    day = lambda r: pd.Series([t.pnl for t in r.trades],
+                              index=[pd.Timestamp(t.entry_time).tz_convert("Europe/Prague").date()
+                                     for t in r.trades]
+                              ).groupby(level=0).sum().min()
+    assert day(plain) < -5_000 < day(capped)
