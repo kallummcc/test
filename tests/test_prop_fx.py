@@ -118,3 +118,53 @@ def test_bundled_strategies_load_and_run():
         res = engine.run(load(name), bars)
         summary = ftmo.evaluate(res, n_boot=20)
         assert summary["weeks"] >= 3, name
+
+
+def test_gold_contract_specs():
+    gold = PAIRS["XAUUSD"]
+    # $0.01 move on 1 lot (100 oz) = $1; a $10 move = $1,000 per lot.
+    assert pip_value_usd(gold, {}) == pytest.approx(1.0)
+    df = fx_bars(weeks=1, drift=-0.0005, vol=0.0001, price=3000.0)
+    res = engine.run(AlwaysLong(name="g", stop=10.0, risk_pct=1.0, max_positions=1),
+                     {"XAUUSD": df})
+    stop = next(t for t in res.trades if t.reason == "stop")
+    assert stop.lots == pytest.approx(1.0)  # $1,000 risk / $10 stop / $100 per $1 per lot
+    assert -1.1 < stop.r_multiple < -0.95
+
+
+@dataclass
+class FixedSide(Strategy):
+    side: int = 1
+    stop: float = 0.0030
+
+    def prepare(self, df, pair):
+        out = df.copy()
+        hour = df.index.hour
+        out["entry"] = np.where(hour == 8, self.side, 0)  # one trade a day
+        out["exit"] = hour == 16
+        out["stop_dist"] = self.stop
+        out["target_dist"] = np.nan
+        out["score"] = 0.0
+        return out
+
+
+def test_walk_forward_learns_from_the_past_only():
+    from prop_fx.adaptive import WalkForward, grid
+
+    df = fx_bars(weeks=10, drift=0.0003, vol=0.0003, seed=3)  # steady uptrend
+    wf = WalkForward(name="wf", base=FixedSide(name="b", max_positions=1),
+                     candidates=grid(side=[1, -1]), train_weeks=3, min_trades=3)
+    out = wf.prepare(df, "EURUSD")
+    weeks = pd.Series(out["param_set"].to_numpy(), index=df.index).resample("W-MON", label="left",
+                                                                             closed="left").max()
+    assert (weeks.iloc[:3] == -1).all()  # no history yet -> flat
+    assert (weeks.iloc[4:] == 0).all()  # learned that long (side=+1) works in an uptrend
+    assert wf.current_params() == {"side": 1}
+
+    # No look-ahead: truncating the future doesn't change past decisions.
+    cut = df.index[len(df) * 7 // 10]
+    early = WalkForward(name="wf", base=FixedSide(name="b", max_positions=1),
+                        candidates=grid(side=[1, -1]), train_weeks=3,
+                        min_trades=3).prepare(df[df.index <= cut], "EURUSD")
+    common = early.index
+    pd.testing.assert_series_equal(early["entry"], out.loc[common, "entry"])

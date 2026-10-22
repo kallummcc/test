@@ -12,6 +12,8 @@ class Pair:
     symbol: str
     pip: float
     spread_pips: float  # typical raw spread on a prop-firm ECN feed
+    contract: float = LOT_UNITS  # units of the base per 1.0 lot
+    leverage: float = 100.0  # max account leverage the prop firm allows on this symbol
 
     @property
     def base(self) -> str:
@@ -39,13 +41,16 @@ PAIRS: dict[str, Pair] = {
         Pair("EURGBP", 0.0001, 0.6),
         Pair("AUDJPY", 0.01, 0.8),
         Pair("EURCHF", 0.0001, 0.8),
+        # Gold: 1 lot = 100 oz, quoted to $0.01. ~$0.30 spread is a typical
+        # prop-firm XAUUSD spread outside news; leverage capped conservatively.
+        Pair("XAUUSD", 0.01, 30.0, contract=100, leverage=30.0),
     ]
 }
 
 # Fallback conversion rates (USD per 1 unit of currency) when the pair needed
 # for conversion is not in the backtest universe.
 FALLBACK_USD_PER = {"USD": 1.0, "EUR": 1.10, "GBP": 1.30, "JPY": 1 / 150, "CHF": 1.15,
-                    "CAD": 1 / 1.37, "AUD": 0.66, "NZD": 0.60}
+                    "CAD": 1 / 1.37, "AUD": 0.66, "NZD": 0.60, "XAU": 2500.0}
 
 
 def usd_per_unit(ccy: str, prices: dict[str, float]) -> float:
@@ -62,8 +67,8 @@ def usd_per_unit(ccy: str, prices: dict[str, float]) -> float:
 
 def pip_value_usd(pair: Pair, prices: dict[str, float]) -> float:
     """USD value of a one-pip move on one standard lot."""
-    return pair.pip * LOT_UNITS * usd_per_unit(pair.quote, prices)
+    return pair.pip * pair.contract * usd_per_unit(pair.quote, prices)
 
 
 def notional_usd(pair: Pair, lots: float, prices: dict[str, float]) -> float:
-    return lots * LOT_UNITS * usd_per_unit(pair.base, prices)
+    return lots * pair.contract * usd_per_unit(pair.base, prices)

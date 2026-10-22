@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 import numpy as np
 import pandas as pd
 
-from .instruments import LOT_UNITS, PAIRS, notional_usd, pip_value_usd, usd_per_unit
+from .instruments import PAIRS, notional_usd, pip_value_usd, usd_per_unit
 from .strategies import Strategy
 
 REQUIRED = {"entry", "exit", "stop_dist", "target_dist", "score"}
@@ -127,7 +127,8 @@ def run(strategy: Strategy, bars: dict[str, pd.DataFrame], cfg: EngineConfig | N
 
     def pnl_usd(j, pos, price):
         quote_ccy = specs[j].quote
-        return pos.side * (price - pos.entry) * pos.lots * LOT_UNITS * usd_per_unit(quote_ccy, prices())
+        return (pos.side * (price - pos.entry) * pos.lots * specs[j].contract
+                * usd_per_unit(quote_ccy, prices()))
 
     def close(j, price, when, reason):
         nonlocal cum
@@ -172,7 +173,8 @@ def run(strategy: Strategy, bars: dict[str, pd.DataFrame], cfg: EngineConfig | N
             lots = math.floor(risk_usd / (stop_pips * pv) * 100) / 100 if stop_pips > 0 else 0
             equity = cfg.initial_balance + cum
             used = sum(notional_usd(specs[k], p.lots, px) for k, p in positions.items())
-            max_lots = (equity * cfg.leverage - used) / notional_usd(specs[j], 1.0, px)
+            leverage = min(cfg.leverage, specs[j].leverage)
+            max_lots = (equity * leverage - used) / notional_usd(specs[j], 1.0, px)
             lots = min(lots, math.floor(max_lots * 100) / 100)
             if lots < 0.01:
                 continue

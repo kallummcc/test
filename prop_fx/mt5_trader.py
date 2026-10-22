@@ -56,7 +56,7 @@ class TraderConfig:
     daily_guard_pct: float = 4.0
     max_guard_pct: float = 9.0
     dry_run: bool = True
-    bars: int = 1500  # hourly history fed to the strategy each bar
+    bars: int = 3000  # hourly history fed to the strategy (walk-forward needs ~12+ weeks)
     log_file: str = "mt5_trades.jsonl"
 
     @classmethod

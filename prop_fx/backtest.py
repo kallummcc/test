@@ -64,6 +64,7 @@ def trade_stats(res: engine.EngineResult, initial: float) -> dict:
         if len(daily) > 2 and daily.std() > 0 else None,
         "trades": int(len(pnl)),
         "trades_per_week": round(len(pnl) / max(1, (times[-1] - times[0]).days / 7), 2),
+        "trades_per_day": round(len(pnl) / max(1, len(set(times.tz_convert("UTC").date))), 2),
         "win_rate_pct": round(100 * len(wins) / len(pnl), 1) if len(pnl) else 0.0,
         "avg_r": round(float(r.mean()), 3) if len(r) else 0.0,
         "profit_factor": round(float(wins.sum() / -losses.sum()), 2)
