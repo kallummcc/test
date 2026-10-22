@@ -96,11 +96,14 @@ def test_ftmo_pass_and_fail_rules():
     rules = ftmo.Rules(max_weeks=12)
     good = ftmo.weeks_from(_result([1_000] * 120), rules)  # +1%/day
     r = ftmo.run_challenge(good, rules)
-    assert r == {"phase1": "pass", "phase2": "pass", "weeks": 3}  # P1 day 10 (wk 2), P2 wk 3
+    # +1%/day: phase 1 (+10%) on weekday 10, phase 2 (+5%) five weekdays later.
+    assert r == {"phase1": "pass", "phase2": "pass", "weeks": 3, "days": 15,
+                 "phase1_days": 10, "phase2_days": 5}
 
     # A -6% day breaches the 5% daily limit.
     bad_day = ftmo.weeks_from(_result([500, -6_000] + [1_000] * 60), rules)
-    assert ftmo.run_challenge(bad_day, rules)["phase1"] == "fail"
+    r = ftmo.run_challenge(bad_day, rules)
+    assert r["phase1"] == "fail" and r["phase1_days"] == 2  # failed on day 2
 
     # Slow bleed through -10% fails the max loss even with no bad single day.
     bleed = ftmo.weeks_from(_result([-900] * 30), rules)

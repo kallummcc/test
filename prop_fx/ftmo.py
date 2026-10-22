@@ -45,6 +45,11 @@ class Week:
     daily_fail: int  # first bar index breaching the daily limit, or -1
     new_trading_day: np.ndarray  # 1 on the first bar of a day with a new position opened
     end_bal: float
+    day_no: np.ndarray | None = None  # 0-based market-day index within the week, per bar
+
+    @property
+    def n_days(self) -> int:
+        return 5  # Mon-Fri; Sunday-evening bars count as Friday (they are always flat)
 
 
 def weeks_from(res: EngineResult, rules: Rules) -> list[Week]:
@@ -70,16 +75,21 @@ def weeks_from(res: EngineResult, rules: Rules) -> list[Week]:
         per_day = opened.astype(int).groupby(np.asarray(days)).cumsum()
         opened_days = (opened & (per_day == 1)).astype(int).to_numpy()
         out.append(Week(bal, worst, res.flat[s:e].copy(), int(breach[0]) if len(breach) else -1,
-                        opened_days, float(bal[-1])))
+                        opened_days, float(bal[-1]),
+                        np.clip(np.asarray(times[s:e].tz_convert("UTC").weekday), 0, 4)))
     return out
 
 
-def run_phase(weeks: list[Week], target_pct: float, rules: Rules) -> tuple[str, int, float]:
-    """Run one phase over a sequence of weeks. Returns (outcome, weeks_used, final_pnl)."""
+def run_phase(weeks: list[Week], target_pct: float, rules: Rules
+              ) -> tuple[str, int, float, int]:
+    """Run one phase over a sequence of weeks.
+
+    Returns (outcome, weeks_used, final_pnl, market_days_used).
+    """
     b0 = rules.initial_balance
     target = target_pct / 100 * b0
     floor = -rules.max_loss_pct / 100 * b0
-    base, tdays = 0.0, 0
+    base, tdays, mdays = 0.0, 0, 0
     for k, w in enumerate(weeks[: rules.max_weeks]):
         n = len(w.bal)
         max_fail = np.flatnonzero(base + w.worst < floor)
@@ -89,23 +99,31 @@ def run_phase(weeks: list[Week], target_pct: float, rules: Rules) -> tuple[str, 
         ok = np.flatnonzero(w.flat & (base + w.bal >= target) & (days >= rules.min_trading_days))
         pass_at = ok[0] if len(ok) else n
         if pass_at < fail_at:
-            return "pass", k + 1, base + w.bal[pass_at]
+            return "pass", k + 1, base + w.bal[pass_at], mdays + _day(w, pass_at)
         if fail_at < n:
-            return "fail", k + 1, base + w.worst[fail_at]
+            return "fail", k + 1, base + w.worst[fail_at], mdays + _day(w, fail_at)
         base += w.end_bal
         tdays = int(days[-1]) if n else tdays
-    return ("timeout" if len(weeks) >= rules.max_weeks else "incomplete"), len(weeks), base
+        mdays += w.n_days
+    outcome = "timeout" if len(weeks) >= rules.max_weeks else "incomplete"
+    return outcome, min(len(weeks), rules.max_weeks), base, mdays
+
+
+def _day(w: Week, bar: int) -> int:
+    return int(w.day_no[bar]) + 1 if w.day_no is not None else 5
 
 
 def run_challenge(weeks_iter, rules: Rules) -> dict:
     """weeks_iter yields weeks; phase 2 continues from the week after phase 1 passed."""
     seq = list(weeks_iter)
-    result = {"phase1": None, "phase2": None, "weeks": 0}
+    result = {"phase1": None, "phase2": None, "weeks": 0, "days": 0}
     pos = 0
     for phase, target in enumerate(rules.phase_targets, start=1):
-        outcome, used, _ = run_phase(seq[pos:], target, rules)
+        outcome, used, _, mdays = run_phase(seq[pos:], target, rules)
         result[f"phase{phase}"] = outcome
+        result[f"phase{phase}_days"] = mdays
         result["weeks"] += used
+        result["days"] += mdays
         pos += used
         if outcome != "pass":
             break
