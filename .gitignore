@@ -7,3 +7,4 @@ trades.jsonl
 data/
 backtest_results/
 tournament/runs/
+tournament_fx/runs/
