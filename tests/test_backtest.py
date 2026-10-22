@@ -123,3 +123,22 @@ def test_alpaca_loader_follows_pagination(monkeypatch):
     assert len(df) == 2 and df["close"].tolist() == [1.5, 1.8]
     assert seen[1]["page_token"] == "abc"
     assert seen[0]["adjustment"] == "all" and seen[0]["timeframe"] == "5Min"
+
+
+def test_trade_from_warms_up_without_trading():
+    df = session_bars(30, seed=6)
+    cutoff = pd.Timestamp(sorted(set(df.index.date))[15], tz=NY)
+    res = Backtester(cfg(), 1000, trade_from=cutoff).run({"A": df})
+    assert res.equity.index.min() >= cutoff
+    assert all(pd.Timestamp(t.entry_time) >= cutoff for t in res.trades)
+    assert res.equity.iloc[0] == pytest.approx(1000)
+
+
+def test_all_bundled_strategies_produce_required_columns():
+    from t212_agent import strategies
+
+    df = session_bars(5, seed=7)
+    for name in strategies.available():
+        out = strategies.load(name).prepare(df)
+        assert {"entry", "exit", "stop_dist", "target_dist", "score"} <= set(out.columns), name
+        assert len(out) == len(df), name

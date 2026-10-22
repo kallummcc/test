@@ -20,6 +20,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import math
 import os
@@ -34,11 +35,12 @@ import requests
 
 from .config import Config, load_config
 from .risk import RiskManager
-from .strategy import add_signals
+from . import strategies
+from .strategies import Strategy
 
 log = logging.getLogger("t212_agent.backtest")
 
-INTERVAL_MINUTES = {"1m": 1, "5m": 5, "15m": 15, "30m": 30}
+INTERVAL_MINUTES = {"1m": 1, "5m": 5, "15m": 15, "30m": 30, "1h": 60}
 
 
 # ---------------------------------------------------------------- data loading
@@ -169,11 +171,16 @@ class BacktestResult:
 
 class Backtester:
     def __init__(self, cfg: Config, starting_balance: float = 1000.0,
-                 slippage_bps: float = 2.0, fx_fee_pct: float = 0.15) -> None:
-        self.cfg = cfg
+                 slippage_bps: float = 2.0, fx_fee_pct: float = 0.15,
+                 strategy: Strategy | None = None,
+                 trade_from: pd.Timestamp | None = None) -> None:
+        self.strategy = strategy or strategies.load("ema_vwap")
+        # Bars before trade_from only warm up indicators; no trades, not in the equity curve.
+        self.trade_from = trade_from
+        self.cfg = strategies.apply_overrides(cfg, self.strategy)
         self.balance0 = starting_balance
         self.cost_rate = slippage_bps / 10_000 + fx_fee_pct / 100
-        self.bar_delta = pd.Timedelta(minutes=INTERVAL_MINUTES[cfg.bar_interval])
+        self.bar_delta = pd.Timedelta(minutes=INTERVAL_MINUTES[self.strategy.interval])
 
     def _session_marks(self, ts: pd.Timestamp) -> tuple[pd.Timestamp, pd.Timestamp, pd.Timestamp]:
         def at(hhmm: str) -> pd.Timestamp:
@@ -188,18 +195,27 @@ class Backtester:
 
     def run(self, bars: dict[str, pd.DataFrame]) -> BacktestResult:
         cfg = self.cfg
-        frames = {
-            s: add_signals(df, cfg.fast_ema, cfg.slow_ema, cfg.atr_period)
-            for s, df in bars.items() if not df.empty
-        }
+        frames = {}
+        for s, df in bars.items():
+            if df.empty:
+                continue
+            out = self.strategy.prepare(df)
+            missing = {"entry", "exit", "stop_dist", "target_dist", "score"} - set(out.columns)
+            if missing:
+                raise ValueError(f"{self.strategy.name}.prepare() is missing columns {missing}")
+            frames[s] = out
         if not frames:
             raise ValueError("no bars to backtest")
         # One wide frame per field, aligned on the union of timestamps.
         timeline = sorted(set().union(*(df.index for df in frames.values())))
-        cols = ["open", "high", "low", "close", "atr", "entry", "cross_down", "below_vwap"]
-        panel = {c: pd.DataFrame({s: df[c] for s, df in frames.items()}).reindex(timeline)
-                 for c in cols}
-        arr = {c: panel[c].to_numpy(dtype=float) for c in cols}
+        cols = ["open", "high", "low", "close", "entry", "exit", "stop_dist", "target_dist",
+                "score"]
+        arr = {}
+        for col in cols:
+            wide = pd.DataFrame({s: df[col] for s, df in frames.items()}).reindex(timeline)
+            if col in ("entry", "exit"):
+                wide = wide.fillna(False).astype(bool)
+            arr[col] = wide.to_numpy(dtype=float)
         symbols = list(frames)
         times = pd.DatetimeIndex(timeline)
         days = times.normalize()
@@ -208,7 +224,7 @@ class Backtester:
                            cfg.max_daily_loss_pct, cfg.max_trades_per_day)
         cash = self.balance0
         positions: dict[int, Position] = {}
-        pending: dict[int, tuple[str, float, str]] = {}  # col -> (BUY/SELL, atr, reason)
+        pending: dict[int, tuple[str, float, float, str]] = {}  # col -> (side, stop, target, why)
         last_close = np.full(len(symbols), np.nan)
         trades: list[Trade] = []
         equity_vals: list[float] = []
@@ -232,9 +248,10 @@ class Backtester:
 
         for i, ts in enumerate(times):
             if days[i] != current_day:
-                # A position can only be left over if a day's data ended early.
+                # Positions still open here had no bar left after the flatten decision
+                # (e.g. hourly bars); they are closed at that session's last close.
                 for j in list(positions):
-                    close_position(j, last_close[j], times[i - 1], "end of data for day")
+                    close_position(j, last_close[j], times[i - 1], "end of day (close)")
                 pending.clear()
                 current_day = days[i]
                 marks = self._session_marks(ts)
@@ -246,16 +263,16 @@ class Backtester:
             o, h, l, c = arr["open"][i], arr["high"][i], arr["low"][i], arr["close"][i]
 
             # 1) Fill orders decided on the previous bar at this bar's open.
-            for j, (side, atr, reason) in list(pending.items()):
+            for j, (side, stop_dist, target_dist, reason) in list(pending.items()):
                 if np.isnan(o[j]):
                     continue  # no bar for this symbol yet; keep the order pending
                 del pending[j]
                 price = o[j]
                 if side == "SELL" and j in positions:
                     close_position(j, price, ts, reason)
-                elif side == "BUY" and j not in positions:
-                    stop = price - cfg.stop_atr_mult * atr
-                    target = price + cfg.target_atr_mult * atr
+                elif side == "BUY" and j not in positions and len(positions) < cfg.max_open_positions:
+                    stop = price - stop_dist
+                    target = price + target_dist if np.isfinite(target_dist) else np.inf
                     eff_price = price * (1 + self.cost_rate)
                     qty = risk.size(mark_to_market(), cash, eff_price, stop)
                     if qty <= 0:
@@ -281,29 +298,33 @@ class Backtester:
             # 3) Decisions at the bar close, executed next bar.
             if decision_time >= flatten_at:
                 for j in positions:
-                    pending[j] = ("SELL", 0.0, "end of day")
+                    pending[j] = ("SELL", 0.0, 0.0, "end of day")
                 for j in [j for j, v in pending.items() if v[0] == "BUY"]:
                     del pending[j]
                 continue
             if not halted and risk.daily_loss_hit(equity):
                 halted = True
                 for j in positions:
-                    pending[j] = ("SELL", 0.0, "daily loss limit")
+                    pending[j] = ("SELL", 0.0, 0.0, "daily loss limit")
             if halted:
                 continue
-            for j in range(len(symbols)):
-                if np.isnan(c[j]) or j in pending:
-                    continue
-                if j in positions:
-                    if arr["cross_down"][i, j] == 1:
-                        pending[j] = ("SELL", 0.0, "EMA bear cross")
-                    elif arr["below_vwap"][i, j] == 1:
-                        pending[j] = ("SELL", 0.0, "lost VWAP")
-                elif arr["entry"][i, j] == 1 and entry_from <= decision_time < entry_until:
-                    queued = sum(1 for v in pending.values() if v[0] == "BUY")
-                    ok, _ = risk.can_open(len(positions) + queued, equity)
-                    if ok and risk.trades_today + queued < cfg.max_trades_per_day:
-                        pending[j] = ("BUY", arr["atr"][i, j], "EMA bull cross above VWAP")
+            for j in positions:
+                if j not in pending and arr["exit"][i, j] == 1:
+                    pending[j] = ("SELL", 0.0, 0.0, "strategy exit")
+            if not (entry_from <= decision_time < entry_until):
+                continue
+            if self.trade_from is not None and ts < self.trade_from:
+                continue
+            candidates = [j for j in np.flatnonzero(arr["entry"][i] == 1)
+                          if j not in positions and j not in pending
+                          and arr["stop_dist"][i, j] > 0 and not np.isnan(c[j])]
+            candidates.sort(key=lambda j: -np.nan_to_num(arr["score"][i, j], nan=-np.inf))
+            for j in candidates:
+                queued = sum(1 for v in pending.values() if v[0] == "BUY")
+                ok, _ = risk.can_open(len(positions) + queued, equity)
+                if not ok or risk.trades_today + queued >= cfg.max_trades_per_day:
+                    break
+                pending[j] = ("BUY", arr["stop_dist"][i, j], arr["target_dist"][i, j], "entry")
 
         # Close anything still open at the very end of the data.
         for j in list(positions):
@@ -312,6 +333,10 @@ class Backtester:
             equity_vals[-1] = cash
 
         equity = pd.Series(equity_vals, index=times, name="equity")
+        if self.trade_from is not None:
+            equity = equity[equity.index >= self.trade_from]
+            frames = {s: df[df.index >= self.trade_from] for s, df in frames.items()}
+            frames = {s: df for s, df in frames.items() if not df.empty}
         bench = self._buy_and_hold(frames)
         return BacktestResult(self.balance0, equity, trades, bench)
 
@@ -370,11 +395,18 @@ def yearly_table(res: BacktestResult) -> pd.DataFrame:
     })
 
 
-def main() -> None:
-    p = argparse.ArgumentParser(description="Backtest the intraday strategy")
+def run_cli(argv: list[str] | None = None) -> dict:
+    p = argparse.ArgumentParser(description="Backtest an intraday strategy")
+    p.add_argument("--strategy", default="ema_vwap",
+                   help=f"one of: {', '.join(strategies.available())}")
     p.add_argument("--source", choices=["alpaca", "csv", "yahoo"], default="alpaca")
+    p.add_argument("--symbols", default=None,
+                   help="comma-separated data symbols, or 'all' for every CSV in --data-dir "
+                        "(default: SYMBOLS from config)")
     p.add_argument("--start", default="2020-01-01")
     p.add_argument("--end", default=None)
+    p.add_argument("--trade-from", default=None,
+                   help="date to start trading; earlier bars only warm up indicators")
     p.add_argument("--balance", type=float, default=1000.0)
     p.add_argument("--slippage-bps", type=float, default=2.0)
     p.add_argument("--fx-fee-pct", type=float, default=0.15,
@@ -383,30 +415,53 @@ def main() -> None:
     p.add_argument("--feed", default="sip", help="Alpaca feed: sip (all exchanges) or iex")
     p.add_argument("--refresh", action="store_true", help="re-download cached Alpaca data")
     p.add_argument("--out", default="backtest_results")
-    args = p.parse_args()
+    p.add_argument("--json", action="store_true", help="print the summary as JSON only")
+    args = p.parse_args(argv)
 
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    logging.basicConfig(level=logging.WARNING if args.json else logging.INFO,
+                        format="%(asctime)s %(levelname)s %(message)s")
     cfg = load_config()
+    strategy = strategies.load(args.strategy)
+    cfg.bar_interval = strategy.interval
     if args.source == "yahoo":
-        log.warning("Yahoo only has ~60 days of intraday bars; --start is effectively ignored")
+        log.warning("Yahoo only has ~60 days of 5m bars (730 days of 1h); --start may be ignored")
 
-    bars = {sym: load_bars(sym, args, cfg) for sym in cfg.symbols.values()}
+    if args.symbols == "all":
+        suffix = f"_{strategy.interval}.csv"
+        symbols = sorted(f.name[: -len(suffix)] for f in Path(args.data_dir).glob(f"*{suffix}"))
+    elif args.symbols:
+        symbols = [s.strip() for s in args.symbols.split(",") if s.strip()]
+    else:
+        symbols = list(cfg.symbols.values())
+    bars = {sym: load_bars(sym, args, cfg) for sym in symbols}
     for sym, df in bars.items():
         log.info("%s: %d bars %s -> %s", sym, len(df),
                  df.index.min() if len(df) else "-", df.index.max() if len(df) else "-")
 
-    res = Backtester(cfg, args.balance, args.slippage_bps, args.fx_fee_pct).run(bars)
+    trade_from = pd.Timestamp(args.trade_from, tz=cfg.timezone) if args.trade_from else None
+    res = Backtester(cfg, args.balance, args.slippage_bps, args.fx_fee_pct, strategy,
+                     trade_from).run(bars)
     out = Path(args.out)
-    out.mkdir(exist_ok=True)
+    out.mkdir(parents=True, exist_ok=True)
     res.equity.to_csv(out / "equity.csv")
     pd.DataFrame([asdict(t) for t in res.trades]).to_csv(out / "trades.csv", index=False)
+    summary = {"strategy": strategy.name, "interval": strategy.interval,
+               "symbols": len(bars), **summarize(res)}
 
+    if args.json:
+        print(json.dumps(summary, default=str))
+        return summary
     print("\n=== Backtest summary ===")
-    for k, v in summarize(res).items():
+    for k, v in summary.items():
         print(f"{k:>24}: {v}")
     print("\n=== By year ===")
     print(yearly_table(res).to_string())
     print(f"\nEquity curve and trade list written to {out}/")
+    return summary
+
+
+def main() -> None:
+    run_cli()
 
 
 if __name__ == "__main__":
