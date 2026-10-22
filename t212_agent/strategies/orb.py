@@ -12,12 +12,16 @@ Paper rules (5-minute ORB on stocks in play):
     (bearish -> short, which a Trading 212 Invest/ISA account cannot do);
   * stop = 10% of the 14-day ATR; no target; exit at the close.
 
-Adaptations for this engine (market orders, next-bar-open fills, long only):
-  * the signal is the first bar *after* the OR whose close is above the OR high,
-    filled at the next bar's open (no stop orders available);
-  * relative volume and ATR use completed prior sessions only (shifted daily
-    aggregates), with a short minimum history because the 5m data has only 39 days;
-  * stop distance is a multiple of the prior-days daily ATR, measured from the fill.
+Adaptations for this engine and account (long only, market orders, 0.34% round trip):
+  * the paper's 5-minute OR on 7,000 stocks loses to costs on 100 large caps with tight
+    10%-ATR stops (see tournament/orb.md), so the submitted STRATEGY uses the 60-minute
+    OR on hourly bars, where 2.8 years of data exist;
+  * "in play" is made stricter (RV >= 5) because the paper's top-20 out of ~7,000 stocks
+    are extreme-RV names, and only the fattest-tailed days pay for a 0.34% round trip;
+  * the OR candle must be up 0.5%-4% (a clear direction but not an exhausted spike);
+  * entry at the next bar's open after the OR completes (Zarattini & Aziz 2023 enter at
+    the open of the candle after the OR), stop at the OR low, no target, out at the close;
+  * relative volume and ATR use completed prior sessions only (shifted daily aggregates).
 
 No look-ahead: the OR high/volume are only used from the bar that completes the OR
 onwards, and everything daily is shifted by one session.
