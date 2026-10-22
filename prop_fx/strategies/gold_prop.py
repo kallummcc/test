@@ -8,14 +8,19 @@ engineering placed on a modest, simple edge. Each piece is on purpose:
             2012) is the documented, plain edge. Shorts are allowed and symmetric.
   geometry  stop = stop_atr x ATR(24h), target = target_r x stop with target_r < 1.
             The target/stop ratio buys the win rate; the walk-forward picks it.
-  calendar  no entries in the high-impact US data window (12-15 UTC fills) or the
-            thin daily break; entries at the Asia, London and NY-afternoon sessions.
-  risk      max 1 position, max 2 trades a day, and a daily stop that leaves room under
-            the 5% FTMO limit even when both trades lose (see the .md).
-  learning  WalkForward re-picks the geometry (and trend length) every week from the
-            trailing 12 weeks, by a prop-firm objective: candidates must show win
-            rate >= 60% AND positive expectancy, then rank by total R minus a
-            worst-day penalty.
+  calendar  entries only at three session fills (01 UTC Asia, 10 UTC London, 16 UTC
+            NY afternoon). Never in the high-impact US data window (12-15 UTC) or the
+            thin daily break. Every position is flattened 1h before the next session
+            ("session exit"), so the slot is free and the bot really trades ~2 a day.
+  regime    no new entries while ATR(24) > 1.5 x its 20-day median (volatility shock:
+            fat tails, gaps, and that's where the daily limit gets breached).
+  risk      1.5% a trade, max 1 position, max 2 trades a day, 3% daily stop. Two full
+            losses = 3%, which leaves a 2% buffer under FTMO's 5% daily limit.
+  learning  PropWalkForward re-picks the geometry (stop_atr x target_r, 16 sets) every
+            Monday from the trailing 12 weeks only, by a prop objective. Sets with win
+            rate >= 60% AND avg R > 0 rank first, then by total R + 2 x worst day.
+            Until 12 weeks of history exist it trades a fixed prior set
+            (2.0 ATR / 0.6R) instead of sitting flat.
 
 Signals at the close of bar t fill at bar t+1's open; only data up to bar t is used.
 """
