@@ -118,9 +118,17 @@ class OpeningRangeBreakout(Strategy):
 
 STRATEGY = OpeningRangeBreakout(
     name="orb",
-    interval="5m",
+    interval="1h",
+    or_minutes=60,          # first hourly bar = opening range (9:30-10:30)
+    rv_min=5.0,             # "in play": first-hour volume >= 5x its 14-day average
+    min_or_ret=0.005,       # first hour up at least 0.5% ...
+    max_or_ret=0.04,        # ... and at most 4% (not an exhausted spike)
+    entry_mode="open",      # buy at the 10:30 open, right after the range completes
+    stop_mode="or_low",     # stop at the opening-range low; no target; exit at the close
     overrides={
-        # enter right after the 5-minute opening range instead of the default 15 min
         "skip_first_minutes": 5,
+        # Zarattini et al. risk 1% of equity per trade; signals are rare (~1 every 4 days)
+        "risk_per_trade_pct": 1.0,
+        "max_position_pct": 40.0,
     },
 )
